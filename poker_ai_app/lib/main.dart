@@ -4,7 +4,7 @@ import 'dart:math';
 
 // ===================== KARTENKILLER ML ENGINE =====================
 
-class KartenKillerEngine {
+class PokerKillerEngine {
   // Position effects (from poker theory)
   static final Map<String, Map<String, double>> POSITION_EFFECTS = {
     'BB': {'open_raise': 0.15, 'defend': 0.85, 'steal': 0.05},
@@ -209,7 +209,7 @@ void main() {
 }
 
 class AppConfig {
-  static const String appName = 'KartenKiller';
+  static const String appName = 'PokerKiller';
   static const String version = '1.0.0';
   static const Color primaryColor = Color(0xFF00ff88);
   static const Color bgColor = Color(0xFF1a1a2e);
@@ -331,7 +331,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
   void _getRecommendation() {
     // Use the ML Engine
-    Map<String, dynamic> result = KartenKillerEngine.getRecommendation(
+    Map<String, dynamic> result = PokerKillerEngine.getRecommendation(
       position: position,
       street: street,
       handRank: handRank,
@@ -477,7 +477,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
                   const Icon(Icons.psychology, color: AppConfig.primaryColor, size: 20),
                   const SizedBox(width: 8),
                   const Text('ML: ', style: TextStyle(color: Colors.grey)),
-                  Text('KartenKiller Engine', style: const TextStyle(color: AppConfig.primaryColor, fontWeight: FontWeight.bold)),
+                  Text('PokerKiller Engine', style: const TextStyle(color: AppConfig.primaryColor, fontWeight: FontWeight.bold)),
                 ],
               ),
             ),
@@ -663,7 +663,7 @@ class TournamentPage extends StatelessWidget {
   }
 
   Widget _buildScenario(int bbs, String action, String range, Color color) {
-    String icmDecision = KartenKillerEngine.getICMDecision(bbs.toDouble(), 1.0);
+    String icmDecision = PokerKillerEngine.getICMDecision(bbs.toDouble(), 1.0);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -778,7 +778,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Text(AppConfig.appName, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                 Text('Version ${AppConfig.version}', style: const TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
-                const Text('ML Engine: KartenKiller', style: TextStyle(color: AppConfig.primaryColor)),
+                const Text('ML Engine: PokerKiller', style: TextStyle(color: AppConfig.primaryColor)),
               ],
             ),
           ),
