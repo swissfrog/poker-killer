@@ -5,6 +5,9 @@ on:
     branches: [ master ]
   workflow_dispatch:
 
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: true
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -28,12 +31,8 @@ jobs:
         cd poker_killer_app
         flutter build apk --release
     
-    - name: Upload APK
-      uses: actions/upload-release-asset@v1
-      env:
-        GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+    - name: Upload APK as Artifact
+      uses: actions/upload-artifact@v4
       with:
-        upload_url: ${{ github.event.release.upload_url }}
-        asset_path: poker_killer_app/build/app/outputs/flutter-apk/app-release.apk
-        asset_name: KartenKiller.apk
-        asset_content_type: application/vnd.android.package-archive
+        name: KartenKiller
+        path: poker_killer_app/build/app/outputs/flutter-apk/app-release.apk
