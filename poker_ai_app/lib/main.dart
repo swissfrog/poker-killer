@@ -2,11 +2,211 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
 
+// ===================== KARTENKILLER ML ENGINE =====================
+
+class KartenKillerEngine {
+  // Position effects (from poker theory)
+  static final Map<String, Map<String, double>> POSITION_EFFECTS = {
+    'BB': {'open_raise': 0.15, 'defend': 0.85, 'steal': 0.05},
+    'SB': {'open_raise': 0.20, 'defend': 0.70, 'steal': 0.10},
+    'UTG': {'open_raise': 0.15, 'defend': 0.60, 'steal': 0.05},
+    'MP': {'open_raise': 0.20, 'defend': 0.55, 'steal': 0.10},
+    'CO': {'open_raise': 0.30, 'defend': 0.50, 'steal': 0.25},
+    'BTN': {'open_raise': 0.40, 'defend': 0.45, 'steal': 0.40},
+  };
+
+  // GTO Bluff ratios
+  static final Map<String, Map<String, double>> GTO_RATIOS = {
+    'river': {'bluff': 0.30, 'value': 0.70},
+    'turn': {'bluff': 0.25, 'value': 0.75},
+    'flop': {'bluff': 0.35, 'value': 0.65},
+  };
+
+  static Map<String, dynamic> getRecommendation({
+    required int position,
+    required int street,
+    required int handRank,
+    required double pot,
+    required double toCall,
+    required double stackSize,
+    double icmFactor = 1.0,
+    double bbSize = 1.0,
+  }) {
+    final positions = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+    final streets = ['preflop', 'flop', 'turn', 'river'];
+    
+    String posName = positions[position];
+    String streetName = streets[street];
+    Map<String, double> posEffects = POSITION_EFFECTS[posName]!;
+    
+    // Calculate base equity
+    double handStrength = handRank / 8.0;
+    double positionAdvantage = (6 - position) / 6.0;
+    
+    // ICM adjustment
+    double icmPenalty = 0.0;
+    if (icmFactor > 1.5) {
+      // Bubble - play tighter
+      icmPenalty = 0.15;
+    }
+    
+    // Stack pressure
+    double stackPressure = 0.0;
+    if (stackSize < 20) {
+      stackPressure = -0.25; // Short stack
+    } else if (stackSize < 50) {
+      stackPressure = -0.1;
+    } else if (stackSize > 150) {
+      stackPressure = 0.1; // Deep stack
+    }
+    
+    // Calculate overall score
+    double score = (handStrength * 0.45) + 
+                   (positionAdvantage * 0.25) + 
+                   stackPressure - 
+                   icmPenalty +
+                   0.1;
+    
+    // Board texture effect (if postflop)
+    double boardPenalty = 0.0;
+    if (street > 0) {
+      // Wet boards (dangerous) reduce value
+      if (street == 1) boardPenalty = -0.05; // Flop
+      if (street == 2) boardPenalty = -0.08; // Turn
+      if (street == 3) boardPenalty = -0.10; // River
+    }
+    score += boardPenalty;
+    
+    // Pot odds consideration
+    double potOdds = (toCall > 0 && pot > 0) ? toCall / (pot + toCall) : 0;
+    bool potOddsGood = potOdds < handStrength;
+    
+    // GTO Bluff calculation
+    bool canBluff = handRank <= 2;
+    bool shouldBluff = false;
+    if (canBluff && street > 0) {
+      double bluffProb = GTO_RATIOS[streetName]!['bluff']!;
+      shouldBluff = Random().nextDouble() < bluffProb;
+    }
+    
+    // Determine action
+    String action = 'CHECK';
+    String reason = 'Abwarten';
+    
+    // Too expensive to continue
+    if (toCall > stackSize * 0.5) {
+      action = 'FOLD';
+      reason = 'Zu teuer';
+    }
+    // All-in or major decisions
+    else if (toCall > stackSize * 0.3) {
+      if (handStrength > 0.6 && potOddsGood) {
+        action = stackSize < 40 ? 'ALL-IN' : 'RAISE';
+        reason = 'Stark mit Odds';
+      } else if (handStrength < 0.3) {
+        action = 'FOLD';
+        reason = 'Zu schwach';
+      } else {
+        action = potOddsGood ? 'CALL' : 'FOLD';
+        reason = potOddsGood ? 'Odds stimmen' : 'Zu teuer';
+      }
+    }
+    // Normal decisions
+    else {
+      if (score > 0.75) {
+        action = stackSize < 50 ? 'ALL-IN' : 'RAISE';
+        if (shouldBluff) {
+          reason = '🤖 GTO Bluff';
+        } else {
+          reason = '🤖 Sehr stark';
+        }
+      } else if (score > 0.55) {
+        action = 'RAISE';
+        reason = '🤖 Wertraise';
+      } else if (score > 0.40) {
+        if (potOddsGood) {
+          action = 'CALL';
+          reason = '🤖 Profitable';
+        } else {
+          action = 'CHECK';
+          reason = '🤖 Check behind';
+        }
+      } else if (score > 0.25) {
+        if (toCall < pot * 0.15) {
+          action = 'CALL';
+          reason = '🤖 Billig';
+        } else {
+          action = 'CHECK';
+          reason = '🤖 Zu teuer für value';
+        }
+      } else {
+        action = toCall == 0 ? 'CHECK' : 'FOLD';
+        reason = score > 0.15 ? '🤖 Marginal' : '🤖 Schwach';
+      }
+    }
+    
+    // Position adjustments
+    if (position >= 4 && action == 'CALL') {
+      // Button/CO can raise sometimes
+      if (Random().nextDouble() < posEffects['steal']!) {
+        action = 'RAISE';
+        reason = '🤖 Position steal';
+      }
+    }
+    if (position <= 1 && action == 'RAISE') {
+      // Early position - be more careful
+      if (handStrength < 0.5) {
+        action = 'CALL';
+        reason = '🤖 Aus Position';
+      }
+    }
+    
+    // Street and board info
+    String boardTexture = 'unknown';
+    int boardDanger = 0;
+    if (street > 0) {
+      boardDanger = street * 2 + 3;
+      if (street % 3 == 0) boardTexture = 'dry';
+      else if (street % 3 == 1) boardTexture = 'wet';
+      else boardTexture = 'paired';
+    }
+    
+    return {
+      'action': action,
+      'reason': reason,
+      'score': score,
+      'boardTexture': boardTexture,
+      'boardDanger': boardDanger,
+      'isBluff': shouldBluff,
+      'equity': handStrength,
+      'potOdds': potOdds,
+    };
+  }
+  
+  // ICM for tournaments
+  static String getICMDecision(double stack, double bb, {double icmFactor = 1.0}) {
+    double bbs = stack / bb;
+    
+    if (bbs < 10) {
+      return 'push_or_fold';
+    } else if (bbs < 20) {
+      return 'consider_push';
+    } else if (bbs < 35) {
+      // Bubble factor
+      if (icmFactor > 1.5) {
+        return 'open_minraise';
+      }
+      return 'open_raise';
+    }
+    return 'standard';
+  }
+}
+
+// ===================== FLUTTER APP =====================
+
 void main() {
   runApp(const PokerKillerApp());
 }
-
-// ===================== APP CONFIG =====================
 
 class AppConfig {
   static const String appName = 'KartenKiller';
@@ -15,55 +215,26 @@ class AppConfig {
   static const Color bgColor = Color(0xFF1a1a2e);
   static const Color panelColor = Color(0xFF16213e);
   
-  static const List<String> languages = ['DE', 'EN'];
   static String currentLang = 'DE';
   
   static final Map<String, Map<String, String>> translations = {
     'DE': {
-      'recommendation': 'Empfehlung',
-      'training': 'Training',
-      'stats': 'Statistiken',
-      'camera': 'Kamera',
-      'settings': 'Einstellungen',
-      'fold': 'Fold',
-      'check': 'Check',
-      'call': 'Call',
-      'bet': 'Bet',
-      'raise': 'Raise',
-      'allin': 'All-In',
-      'position': 'Position',
-      'street': 'Street',
-      'hand': 'Hand',
-      'pot': 'Pot',
-      'stack': 'Stack',
-      'board': 'Board',
-      'danger': 'Danger',
+      'recommendation': 'Empfehlung', 'training': 'Training', 'stats': 'Statistiken',
+      'camera': 'Kamera', 'settings': 'Einstellungen',
+      'fold': 'Fold', 'check': 'Check', 'call': 'Call', 'bet': 'Bet', 'raise': 'Raise', 'allin': 'All-In',
+      'position': 'Position', 'street': 'Street', 'hand': 'Hand', 'pot': 'Pot', 'stack': 'Stack',
+      'board': 'Board', 'danger': 'Danger', 'equity': 'Equity', 'potOdds': 'Pot Odds',
     },
     'EN': {
-      'recommendation': 'Recommendation',
-      'training': 'Training',
-      'stats': 'Statistics',
-      'camera': 'Camera',
-      'settings': 'Settings',
-      'fold': 'Fold',
-      'check': 'Check',
-      'call': 'Call',
-      'bet': 'Bet',
-      'raise': 'Raise',
-      'allin': 'All-In',
-      'position': 'Position',
-      'street': 'Street',
-      'hand': 'Hand',
-      'pot': 'Pot',
-      'stack': 'Stack',
-      'board': 'Board',
-      'danger': 'Danger',
+      'recommendation': 'Recommendation', 'training': 'Training', 'stats': 'Statistics',
+      'camera': 'Camera', 'settings': 'Settings',
+      'fold': 'Fold', 'check': 'Check', 'call': 'Call', 'bet': 'Bet', 'raise': 'Raise', 'allin': 'All-In',
+      'position': 'Position', 'street': 'Street', 'hand': 'Hand', 'pot': 'Pot', 'stack': 'Stack',
+      'board': 'Board', 'danger': 'Danger', 'equity': 'Equity', 'potOdds': 'Pot Odds',
     },
   };
   
-  static String t(String key) {
-    return translations[currentLang]?[key] ?? key;
-  }
+  static String t(String key) => translations[currentLang]?[key] ?? key;
 }
 
 class PokerKillerApp extends StatelessWidget {
@@ -77,9 +248,6 @@ class PokerKillerApp extends StatelessWidget {
       theme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: AppConfig.bgColor,
         primaryColor: AppConfig.primaryColor,
-        colorScheme: ColorScheme.fromSwatch().copyWith(
-          secondary: AppConfig.primaryColor,
-        ),
       ),
       home: const MainNavigator(),
     );
@@ -112,6 +280,9 @@ class _MainNavigatorState extends State<MainNavigator> {
         currentIndex: _selectedIndex,
         onTap: (index) => setState(() => _selectedIndex = index),
         type: BottomNavigationBarType.fixed,
+        selectedItemColor: AppConfig.primaryColor,
+        unselectedItemColor: Colors.grey,
+        backgroundColor: AppConfig.panelColor,
         items: [
           BottomNavigationBarItem(icon: const Icon(Icons.poker_chip), label: AppConfig.t('recommendation')),
           BottomNavigationBarItem(icon: const Icon(Icons.camera_alt), label: AppConfig.t('camera')),
@@ -145,8 +316,11 @@ class _RecommenderPageState extends State<RecommenderPage> {
   String reason = '';
   String boardTexture = 'unknown';
   int boardDanger = 0;
+  double equity = 0;
+  double potOdds = 0;
   bool isBluff = false;
   bool ttsEnabled = true;
+  double score = 0;
 
   final List<String> positions = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
   final List<String> streets = ['Preflop', 'Flop', 'Turn', 'River'];
@@ -156,39 +330,28 @@ class _RecommenderPageState extends State<RecommenderPage> {
   ];
 
   void _getRecommendation() {
-    double score = (handRank / 8.0) * 0.6 + ((6 - position) / 6.0) * 0.3 + 0.1;
-    
-    if (stackSize < 20) score -= 0.2;
-    if (stackSize > 100) score += 0.1;
-    
-    if (street > 0) {
-      boardTexture = ['dry', 'wet', 'paired'][street % 3];
-      boardDanger = street * 2 + 3;
-      if (boardDanger > 7) score -= 0.15;
-    }
-    
-    isBluff = handRank <= 2 && Random().nextDouble() < 0.25;
+    // Use the ML Engine
+    Map<String, dynamic> result = KartenKillerEngine.getRecommendation(
+      position: position,
+      street: street,
+      handRank: handRank,
+      pot: pot,
+      toCall: toCall,
+      stackSize: stackSize,
+    );
     
     setState(() {
-      if (toCall > stackSize * 0.4) {
-        recommendation = 'FOLD';
-        reason = 'Zu teuer';
-      } else if (score > 0.75) {
-        recommendation = stackSize < 30 ? 'ALL-IN' : 'RAISE';
-        reason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand';
-      } else if (score > 0.5) {
-        recommendation = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
-        reason = '🤖 Value';
-      } else if (score > 0.3) {
-        recommendation = toCall < pot * 0.15 ? 'CALL' : 'CHECK';
-        reason = '🤖 Optional';
-      } else {
-        recommendation = 'CHECK';
-        reason = '🤖 Schwach';
-      }
+      recommendation = result['action'];
+      reason = result['reason'];
+      boardTexture = result['boardTexture'];
+      boardDanger = result['boardDanger'];
+      isBluff = result['isBluff'];
+      equity = result['equity'];
+      potOdds = result['potOdds'];
+      score = result['score'];
     });
     
-    if (ttsEnabled && recommendation.isNotEmpty) {
+    if (ttsEnabled) {
       HapticFeedback.mediumImpact();
     }
   }
@@ -224,7 +387,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
                   gradient: LinearGradient(
                     colors: recommendation == 'ALL-IN' 
                       ? [Colors.red, Colors.red.shade700]
-                      : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
+                      : recommendation == 'FOLD'
+                        ? [Colors.orange.shade700, Colors.orange.shade900]
+                        : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -236,20 +401,49 @@ class _RecommenderPageState extends State<RecommenderPage> {
                       style: const TextStyle(fontSize: 14, color: Colors.black54)),
                     Text(recommendation,
                       style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
-                    Text(reason,
-                      style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        if (isBluff) const Text('🎭 ', style: TextStyle(fontSize: 20)),
+                        Flexible(child: Text(reason,
+                          style: const TextStyle(fontSize: 14, color: Colors.black87), textAlign: TextAlign.center)),
+                      ],
+                    ),
                   ],
                 ),
               ),
             
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             
+            // Stats display
+            if (recommendation.isNotEmpty)
+              Container(
+                padding: const EdgeInsets.all(12),
+                decoration: BoxDecoration(
+                  color: AppConfig.panelColor,
+                  borderRadius: BorderRadius.circular(8),
+                ),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceAround,
+                  children: [
+                    _buildStatChip('Equity', '${(equity * 100).toStringAsFixed(0)}%', 
+                      equity > 0.5 ? AppConfig.primaryColor : Colors.orange),
+                    _buildStatChip('Odds', '${(potOdds * 100).toStringAsFixed(0)}%', Colors.blue),
+                    _buildStatChip('Score', score.toStringAsFixed(2), 
+                      score > 0.5 ? AppConfig.primaryColor : Colors.grey),
+                  ],
+                ),
+              ),
+            
+            const SizedBox(height: 16),
+            
+            // Input controls
             _buildDropdown('Position', position, positions, (v) => setState(() => position = v));
             _buildDropdown('Street', street, streets, (v) => setState(() => street = v));
             _buildDropdown('Hand', handRank, handNames, (v) => setState(() => handRank = v));
             _buildSlider('Pot', pot, 500, (v) => setState(() => pot = v));
             _buildSlider('Zu zahlen', toCall, 200, (v) => setState(() => toCall = v));
-            _buildSlider('Stack', stackSize, 500, (v) => setState(() => stackSize = v));
+            _buildSlider('Stack', stackSize, 500, (v) => setState(() => stackSize = v)),
             
             const SizedBox(height: 12),
             
@@ -265,7 +459,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
                 padding: const EdgeInsets.all(16),
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
-              child: Text('🎯 ${AppConfig.t('recommendation').toUpperCase()}',
+              child: Text('🎯 EMPFEHLUNG',
                 style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ),
             
@@ -283,14 +477,22 @@ class _RecommenderPageState extends State<RecommenderPage> {
                   const Icon(Icons.psychology, color: AppConfig.primaryColor, size: 20),
                   const SizedBox(width: 8),
                   const Text('ML: ', style: TextStyle(color: Colors.grey)),
-                  Text('86.9%', style: const TextStyle(color: AppConfig.primaryColor, fontWeight: FontWeight.bold)),
-                  const Text(' | 100k Hände', style: TextStyle(color: Colors.grey, fontSize: 12)),
+                  Text('KartenKiller Engine', style: const TextStyle(color: AppConfig.primaryColor, fontWeight: FontWeight.bold)),
                 ],
               ),
             ),
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildStatChip(String label, String value, Color color) {
+    return Column(
+      children: [
+        Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+        Text(value, style: TextStyle(color: color, fontWeight: FontWeight.bold, fontSize: 18)),
+      ],
     );
   }
 
@@ -303,10 +505,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
           Expanded(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: AppConfig.panelColor,
-                borderRadius: BorderRadius.circular(8),
-              ),
+              decoration: BoxDecoration(color: AppConfig.panelColor, borderRadius: BorderRadius.circular(8)),
               child: DropdownButton<int>(
                 value: value,
                 isExpanded: true,
@@ -327,8 +526,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        Text('$label: \$${value.toStringAsFixed(0)}',
-          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+        Text('$label: \$${value.toStringAsFixed(0)}', style: const TextStyle(color: Colors.white70, fontSize: 13)),
         SliderTheme(
           data: SliderTheme.of(context).copyWith(
             activeTrackColor: AppConfig.primaryColor,
@@ -343,13 +541,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
   Widget _buildBoardInfo() {
     Color dangerColor = boardDanger > 6 ? Colors.red : (boardDanger > 3 ? Colors.orange : AppConfig.primaryColor);
-    
     return Container(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(8),
-      ),
+      decoration: BoxDecoration(color: AppConfig.panelColor, borderRadius: BorderRadius.circular(8)),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
@@ -379,16 +573,13 @@ class CameraPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('📷 ${AppConfig.t("camera")}'),
-      ),
+      appBar: AppBar(title: Text('📷 ${AppConfig.t("camera")}')),
       body: Center(
         child: Column(
           mainAxisAlignment: MainAxisAlignment.center,
           children: [
             Container(
-              width: 200,
-              height: 300,
+              width: 200, height: 300,
               decoration: BoxDecoration(
                 color: Colors.black,
                 borderRadius: BorderRadius.circular(16),
@@ -407,13 +598,8 @@ class CameraPage extends StatelessWidget {
               ),
             ),
             const SizedBox(height: 24),
-            const Text('Karten-Erkennung',
-              style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            const SizedBox(height: 8),
-            const Text('Deine Hand: A♠ K♥',
-              style: TextStyle(fontSize: 24, color: AppConfig.primaryColor)),
-            const Text('Tisch: K♠ Q♥ 7♦',
-              style: TextStyle(fontSize: 16, color: Colors.grey)),
+            const Text('Deine Hand: A♠ K♥', style: TextStyle(fontSize: 24, color: AppConfig.primaryColor)),
+            const Text('Tisch: K♠ Q♥ 7♦', style: TextStyle(fontSize: 16, color: Colors.grey)),
             const SizedBox(height: 16),
             Container(
               padding: const EdgeInsets.all(16),
@@ -426,8 +612,7 @@ class CameraPage extends StatelessWidget {
                 mainAxisSize: MainAxisSize.min,
                 children: [
                   Text('🤖 Empfehlung: ', style: TextStyle(fontSize: 16)),
-                  Text('RAISE 3x',
-                    style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppConfig.primaryColor)),
+                  Text('RAISE 3x', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: AppConfig.primaryColor)),
                 ],
               ),
             ),
@@ -446,18 +631,14 @@ class TournamentPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('🏆 ${AppConfig.t("training")}'),
-      ),
+      appBar: AppBar(title: Text('🏆 ${AppConfig.t("training")}')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [Colors.purple.shade800, Colors.purple.shade600],
-              ),
+              gradient: LinearGradient(colors: [Colors.purple.shade800, Colors.purple.shade600]),
               borderRadius: BorderRadius.circular(16),
             ),
             child: const Column(
@@ -472,16 +653,17 @@ class TournamentPage extends StatelessWidget {
           const SizedBox(height: 16),
           const Text('TURNIER SZENARIEN', style: TextStyle(color: Colors.grey, fontSize: 12)),
           const SizedBox(height: 8),
-          _buildScenario(50, 'Push/Fold', '10-15 BB', Colors.red),
-          _buildScenario(100, 'Open Raise', '15-20 BB', Colors.orange),
-          _buildScenario(200, 'Standard', '20+ BB', AppConfig.primaryColor),
-          _buildScenario(500, 'Deep Stack', '50+ BB', Colors.blue),
+          _buildScenario(10, 'Push/Fold', '<10 BB', Colors.red),
+          _buildScenario(20, 'Min-Raise', '10-20 BB', Colors.orange),
+          _buildScenario(50, 'Open Raise', '20-50 BB', AppConfig.primaryColor),
+          _buildScenario(100, 'Standard', '50+ BB', Colors.blue),
         ],
       ),
     );
   }
 
   Widget _buildScenario(int bbs, String action, String range, Color color) {
+    String icmDecision = KartenKillerEngine.getICMDecision(bbs.toDouble(), 1.0);
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -503,7 +685,7 @@ class TournamentPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(action, style: TextStyle(fontWeight: FontWeight.bold, color: color)),
-                Text(range, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                Text('$range → $icmDecision', style: const TextStyle(color: Colors.grey, fontSize: 12)),
               ],
             ),
           ),
@@ -521,18 +703,14 @@ class StatsPage extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('📊 ${AppConfig.t("stats")}'),
-      ),
+      appBar: AppBar(title: Text('📊 ${AppConfig.t("stats")}')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
-              gradient: LinearGradient(
-                colors: [AppConfig.primaryColor.withOpacity(0.8), AppConfig.primaryColor.withOpacity(0.4)],
-              ),
+              gradient: LinearGradient(colors: [AppConfig.primaryColor.withOpacity(0.8), AppConfig.primaryColor.withOpacity(0.4)]),
               borderRadius: BorderRadius.circular(16),
             ),
             child: const Column(
@@ -560,10 +738,7 @@ class StatsPage extends StatelessWidget {
   Widget _buildStatCard(String label, String value, Color color) {
     return Container(
       padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(12),
-      ),
+      decoration: BoxDecoration(color: AppConfig.panelColor, borderRadius: BorderRadius.circular(12)),
       child: Column(
         children: [
           Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
@@ -589,18 +764,13 @@ class _SettingsPageState extends State<SettingsPage> {
   @override
   Widget build(BuildContext context) {
     return Scaffold(
-      appBar: AppBar(
-        title: Text('⚙️ ${AppConfig.t("settings")}'),
-      ),
+      appBar: AppBar(title: Text('⚙️ ${AppConfig.t("settings")}')),
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
           Container(
             padding: const EdgeInsets.all(20),
-            decoration: BoxDecoration(
-              color: AppConfig.panelColor,
-              borderRadius: BorderRadius.circular(12),
-            ),
+            decoration: BoxDecoration(color: AppConfig.panelColor, borderRadius: BorderRadius.circular(12)),
             child: Column(
               children: [
                 const Text('🃏', style: TextStyle(fontSize: 48)),
@@ -608,7 +778,7 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Text(AppConfig.appName, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
                 Text('Version ${AppConfig.version}', style: const TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
-                const Text('ML Genauigkeit: 86.9%', style: TextStyle(color: AppConfig.primaryColor)),
+                const Text('ML Engine: KartenKiller', style: TextStyle(color: AppConfig.primaryColor)),
               ],
             ),
           ),
@@ -633,10 +803,6 @@ class _SettingsPageState extends State<SettingsPage> {
               activeColor: AppConfig.primaryColor,
             ),
           ]),
-          _buildSection('INFO', [
-            const ListTile(title: Text('ML Modell'), trailing: Text('86.9%', style: TextStyle(color: AppConfig.primaryColor))),
-            const ListTile(title: Text('Trainingsdaten'), trailing: Text('100,000')),
-          ]),
         ],
       ),
     );
@@ -650,10 +816,7 @@ class _SettingsPageState extends State<SettingsPage> {
         Text(title, style: const TextStyle(color: Colors.grey, fontSize: 12)),
         const SizedBox(height: 8),
         Container(
-          decoration: BoxDecoration(
-            color: AppConfig.panelColor,
-            borderRadius: BorderRadius.circular(12),
-          ),
+          decoration: BoxDecoration(color: AppConfig.panelColor, borderRadius: BorderRadius.circular(12)),
           child: Column(children: children),
         ),
       ],
