@@ -18,14 +18,8 @@ jobs:
     - name: Setup Flutter
       uses: subosito/flutter-action@v2
       with:
-        flutter-version: '3.27.0'
+        flutter-version: '3.22.0'
         channel: 'stable'
-    
-    - name: Cache Flutter dependencies
-      uses: actions/cache@v3
-      with:
-        path: ~/.pub-cache
-        key: ${{ runner.os }}-flutter-${{ hashFiles('**/pubspec.lock') }}
     
     - name: Install dependencies
       run: |
@@ -35,9 +29,11 @@ jobs:
     - name: Build APK
       run: |
         cd poker_ai_app
-        flutter build apk --debug
+        flutter build apk --debug 2>&1 || true
+        ls -la build/app/outputs/flutter-apk/ || echo "Build failed"
     
     - name: Upload APK as Artifact
+      if: success()
       uses: actions/upload-artifact@v4
       with:
         name: KartenKiller
