@@ -2,7 +2,11 @@ import 'package:flutter/material.dart';
 
 void main() => runApp(const OttoApp());
 
-class AC { static const Color P = Color(0xFF00FF88), BG = Color(0xFF1A1A2E), PN = Color(0xFF16213E); }
+class AC { 
+  static const Color P = Color(0xFF00FF88); 
+  static const Color BG = Color(0xFF1A1A2E); 
+  static const Color PN = Color(0xFF16213E); 
+}
 
 class OttoApp extends StatelessWidget {
   const OttoApp({super.key});
@@ -10,8 +14,8 @@ class OttoApp extends StatelessWidget {
   Widget build(BuildContext context) => MaterialApp(
     title: 'Otto Poker',
     debugShowCheckedModeBanner: false,
-    theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: AC.BG, primaryColor: AC.P),
-    home: const MN(),
+    theme: ThemeData.dark().copyWith(scaffoldBackgroundColor: AC.BG),
+    home: const MN()
   );
 }
 
@@ -22,275 +26,181 @@ class MN extends StatefulWidget {
 }
 
 class _MNState extends State<MN> {
-  int i = 0;
-  List myCards = [];
-  List boardCards = [];
+  int seite = 0;
+  List meineKarten = [];
+  List tischKarten = [];
+  
   @override
   Widget build(BuildContext context) => Scaffold(
-    body: IndexedStack(
-      index: i,
-      children: [
-        RecScr(myCards: myCards, boardCards: boardCards),
-        ManScr(title: 'Meine 2', max: 2, onSave: (c) => setState(() => myCards = c)),
-        ManScr(title: 'Tisch', max: 5, onSave: (c) => setState(() => boardCards = c)),
-      ],
-    ),
-    bottomNavigationBar: BottomNavigationBar(
-      currentIndex: i,
-      onTap: (x) => setState(() => i = x),
-      selectedItemColor: AC.P,
-      backgroundColor: AC.PN,
-      items: const [
-        BottomNavigationBarItem(icon: Icon(Icons.casino), label: 'Empfehlung'),
-        BottomNavigationBarItem(icon: Icon(Icons.person), label: 'Meine 2'),
-        BottomNavigationBarItem(icon: Icon(Icons.table_restaurant), label: 'Tisch'),
-      ],
-    ),
+    appBar: AppBar(title: const Row(mainAxisSize: MainAxisSize.min, children: [Text('🦦 Otto'), Text(' Poker', style: TextStyle(fontWeight: FontWeight.bold))]), centerTitle: true, backgroundColor: AC.PN),
+    body: IndexedStack(index: seite, children: [
+      Empfehlung(meineKarten: meineKarten, tischKarten: tischKarten),
+      KartenEingabe(titel: 'Meine 2 Karten', max: 2, Karten: meineKarten, onSave: (k) => setState(() => meineKarten = k)),
+      KartenEingabe(titel: 'Tisch (5 Karten)', max: 5, Karten: tischKarten, onSave: (k) => setState(() => tischKarten = k)),
+    ]),
+    bottomNavigationBar: BottomNavigationBar(currentIndex: seite, onTap: (s) => setState(() => seite = s), selectedItemColor: AC.P, backgroundColor: AC.PN, items: const [
+      BottomNavigationBarItem(icon: Icon(Icons.calculate), label: 'Empfehlung'),
+      BottomNavigationBarItem(icon: Icon(Icons.credit_card), label: 'Meine Karten'),
+      BottomNavigationBarItem(icon: Icon(Icons.table_restaurant), label: 'Tisch'),
+    ]),
   );
 }
 
-class RecScr extends StatefulWidget {
-  final List myCards, boardCards;
-  const RecScr({super.key, required this.myCards, required this.boardCards});
+class Empfehlung extends StatefulWidget {
+  final List meineKarten, tischKarten;
+  const Empfehlung({super.key, required this.meineKarten, required this.tischKarten});
   @override
-  State<RecScr> createState() => _RecScrState();
+  State<Empfehlung> createState() => _EmpfehlungState();
 }
 
-class _RecScrState extends State<RecScr> {
-  int pos = 2, hr = 0;
-  double pot = 100, toCall = 20, stack = 200;
-  String rec = '';
-  final poss = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+class _EmpfehlungState extends State<Empfehlung> {
+  int position = 2, handRang = 0;
+  double pot = 100, zuZahlen = 20, stack = 200;
+  String empfehlung = '';
+  final positionen = ['Big Blind', 'Small Blind', 'Button', 'Cutoff', 'MP', 'UTG'];
 
-  void calc() {
-    double s = (hr / 8) * 0.5 + ((6 - pos) / 6) * 0.3 + 0.2;
-    if (stack < 20) s -= 0.2;
-    double o = toCall > 0 ? toCall / (pot + toCall) : 0;
-    bool fb = o < (hr / 8);
-    if (toCall > stack * 0.4) rec = 'FOLD';
-    else if (s > 0.7) rec = stack < 40 ? 'ALL-IN' : 'ERHOHEN';
-    else if (s > 0.45) rec = fb ? 'MITGEHEN' : 'CHECK';
-    else rec = toCall == 0 ? 'CHECK' : 'FOLD';
+  void berechne() {
+    double staerke = (handRang / 8) * 0.5 + ((6 - position) / 6) * 0.3 + 0.2;
+    if (stack < 20) staerke -= 0.2;
+    double potOdds = zuZahlen > 0 ? zuZahlen / (pot + zuZahlen) : 0;
+    bool einsatz = potOdds < (handRang / 8);
+    if (zuZahlen > stack * 0.4) empfehlung = 'PASSEN';
+    else if (staerke > 0.7) empfehlung = stack < 40 ? 'ALL-IN' : 'ERHOHEN';
+    else if (staerke > 0.45) empfehlung = einsatz ? 'MITGEHEN' : 'CHECK';
+    else empfehlung = zuZahlen == 0 ? 'CHECK' : 'PASSEN';
     setState(() {});
   }
 
-  void ev() {
-    if (widget.myCards.isEmpty) { hr = 0; return; }
-    List rs = [...widget.myCards.map((c) => c['r']), ...widget.boardCards.map((c) => c['r'])];
-    List ss = [...widget.myCards.map((c) => c['s']), ...widget.boardCards.map((c) => c['s'])];
-    Map rc = {}, sc = {};
-    for (var r in rs) rc[r] = (rc[r] ?? 0) + 1;
-    for (var s in ss) sc[s] = (sc[s] ?? 0) + 1;
-    if (sc.values.any((c) => c >= 5)) hr = 5;
-    else if (rc.values.any((c) => c >= 4)) hr = 7;
-    else if (rc.values.any((c) => c == 3) && rc.values.any((c) => c >= 2)) hr = 6;
-    else if (rc.values.any((c) => c == 3)) hr = 3;
-    else hr = rc.values.where((c) => c == 2).length >= 2 ? 2 : (rc.values.any((c) => c == 2) ? 1 : 0);
+  void bewerteHand() {
+    if (widget.meineKarten.isEmpty) { handRang = 0; return; }
+    List werte = [...widget.meineKarten.map((k) => k['r']), ...widget.tischKarten.map((k) => k['r'])];
+    List farben = [...widget.meineKarten.map((k) => k['s']), ...widget.tischKarten.map((k) => k['s'])];
+    Map zaehlerW = {};
+    Map zaehlerF = {};
+    for (var w in werte) zaehlerW[w] = (zaehlerW[w] ?? 0) + 1;
+    for (var f in farben) zaehlerF[f] = (zaehlerF[f] ?? 0) + 1;
+    if (zaehlerF.values.any((z) => z >= 5)) handRang = 5;
+    else if (zaehlerW.values.any((z) => z >= 4)) handRang = 7;
+    else if (zaehlerW.values.any((z) => z == 3) && zaehlerW.values.any((z) => z >= 2)) handRang = 6;
+    else if (zaehlerW.values.any((z) => z == 3)) handRang = 3;
+    else handRang = zaehlerW.values.where((z) => z == 2).length >= 2 ? 2 : (zaehlerW.values.any((z) => z == 2) ? 1 : 0);
   }
 
-  String hn(int h) => ['High Card', 'Paar', 'Two Pair', 'Drilling', 'Strasse', 'Flush', 'Full House', 'Vierling', 'Strasse Flush'][h.clamp(0, 8)];
+  String handName(int r) => ['Höchste Karte', 'Ein Paar', 'Two Pair', 'Drilling', 'Straße', 'Flush', 'Full House', 'Vierling', 'Straße Flush'][r.clamp(0, 8)];
 
   @override
   Widget build(BuildContext context) {
-    ev();
-    String st = widget.boardCards.isEmpty ? 'Preflop' : widget.boardCards.length == 3 ? 'Flop' : widget.boardCards.length == 4 ? 'Turn' : 'River';
-    return Scaffold(
-      appBar: AppBar(title: const Row(mainAxisSize: MainAxisSize.min, children: [Text('Otto '), Text('Poker', style: TextStyle(fontWeight: FontWeight.bold))]), centerTitle: true),
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(12)),
-            child: Column(children: [
-              const Text('MEINE 2 KARTEN', style: TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: widget.myCards.isEmpty 
-                  ? [const Text('-', style: TextStyle(fontSize: 40, color: Colors.grey))]
-                  : widget.myCards.map<Widget>((x) => VisCard(rank: x['r'], suit: x['s'])).toList(),
-              ),
-            ]),
-          ),
-          const SizedBox(height: 12),
-          Container(
-            padding: const EdgeInsets.all(16),
-            decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(12)),
-            child: Column(children: [
-              Text('TISCH (${widget.boardCards.length})', style: const TextStyle(color: Colors.grey, fontSize: 12)),
-              const SizedBox(height: 12),
-              Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: widget.boardCards.isEmpty 
-                  ? [const Text('-', style: TextStyle(fontSize: 40, color: Colors.grey))]
-                  : widget.boardCards.map<Widget>((x) => VisCard(rank: x['r'], suit: x['s'])).toList(),
-              ),
-            ]),
-          ),
-          if (hr > 0 || widget.myCards.isNotEmpty) Container(
-            padding: const EdgeInsets.all(12), margin: const EdgeInsets.only(top: 12),
-            decoration: BoxDecoration(color: AC.P.withAlpha(51), borderRadius: BorderRadius.circular(8)),
-            child: Row(mainAxisAlignment: MainAxisAlignment.center, children: [
-              const Icon(Icons.analytics, color: AC.P), const SizedBox(width: 8),
-              Text('Hand: ' + hn(hr) + ' | ' + st, style: const TextStyle(color: AC.P, fontSize: 16, fontWeight: FontWeight.bold)),
-            ]),
-          ),
-          if (rec.isNotEmpty) Container(
-            margin: const EdgeInsets.only(top: 12),
-            padding: const EdgeInsets.all(24),
-            decoration: BoxDecoration(
-              gradient: LinearGradient(colors: rec == 'ALL-IN' ? [Colors.red, Colors.red.shade700] : [AC.P, AC.P.withAlpha(179)], begin: Alignment.topLeft, end: Alignment.bottomRight),
-              borderRadius: BorderRadius.circular(16),
-            ),
-            child: Column(children: [
-              const Text('EMPFEHLUNG', style: TextStyle(fontSize: 14, color: Colors.black54)),
-              Text(rec, style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
-            ]),
-          ),
-          const SizedBox(height: 20),
-          dd('Position', pos, poss, (x) => setState(() => pos = x)),
-          sl('Pot', pot, 500, (x) => setState(() => pot = x)),
-          sl('Zu zahlen', toCall, 200, (x) => setState(() => toCall = x)),
-          sl('Stack', stack, 500, (x) => setState(() => stack = x)),
-          const SizedBox(height: 20),
-          ElevatedButton(onPressed: calc, style: ElevatedButton.styleFrom(backgroundColor: AC.P, foregroundColor: Colors.black, padding: const EdgeInsets.all(16), shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))),
-            child: const Text('EMPFEHLUNG', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))),
-        ]),
-      ),
-    );
-  }
-
-  Widget dd(String l, int v, List I, Function f) => Padding(
-    padding: const EdgeInsets.only(bottom: 8),
-    child: Row(children: [
-      SizedBox(width: 90, child: Text(l + ':', style: const TextStyle(color: Colors.white70))),
-      Expanded(child: Container(padding: const EdgeInsets.symmetric(horizontal: 12), decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(8)),
-        child: DropdownButton<int>(value: v, isExpanded: true, underline: const SizedBox(), dropdownColor: AC.PN,
-          items: List.generate(I.length, (x) => DropdownMenuItem(value: x, child: Text(I[x]))), onChanged: (y) => f(y))))]),
-  );
-
-  Widget sl(String l, double v, double m, Function f) => Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
-    Text(l + ': ' + v.toStringAsFixed(0) + ' Euro', style: const TextStyle(color: Colors.white70, fontSize: 13)),
-    SliderTheme(data: SliderTheme.of(context).copyWith(activeTrackColor: AC.P, thumbColor: AC.P, inactiveTrackColor: Colors.grey.shade800),
-      child: Slider(value: v, min: 0, max: m, onChanged: (x) => f(x))),
-  ]);
-}
-
-class VisCard extends StatelessWidget {
-  final String rank;
-  final String suit;
-  const VisCard({super.key, required this.rank, required this.suit});
-  
-  @override
-  Widget build(BuildContext context) {
-    bool red = suit == 'HEARTS' || suit == 'DIAMONDS';
-    Color bg = red ? Colors.white : Colors.black;
-    Color fg = red ? Colors.red : Colors.white;
-    String icon = suit == 'SPADES' ? '♠' : suit == 'HEARTS' ? '♥' : suit == 'DIAMONDS' ? '♦' : '♣';
-    
-    return Container(
-      width: 60,
-      height: 84,
-      margin: const EdgeInsets.symmetric(horizontal: 4),
-      decoration: BoxDecoration(
-        color: bg,
-        borderRadius: BorderRadius.circular(8),
-        border: Border.all(color: red ? Colors.red : Colors.white, width: 2),
-        boxShadow: [BoxShadow(color: Colors.black.withAlpha(77), blurRadius: 4, offset: const Offset(2, 2))],
-      ),
-      child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [
-        Text(rank, style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold, color: fg)),
-        Text(icon, style: TextStyle(fontSize: 24, color: fg)),
-      ]),
-    );
-  }
-}
-
-class ManScr extends StatefulWidget {
-  final String title;
-  final int max;
-  final Function(List) onSave;
-  const ManScr({super.key, required this.title, required this.max, required this.onSave});
-  @override
-  State<ManScr> createState() => _ManScrState();
-}
-
-class _ManScrState extends State<ManScr> {
-  List cards = [];
-  final rks = ['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2'];
-  final sts = ['SPADES', 'HEARTS', 'DIAMONDS', 'CLUBS'];
-  final simg = {'SPADES': '♠', 'HEARTS': '♥', 'DIAMONDS': '♦', 'CLUBS': '♣'};
-  final scol = {'SPADES': Colors.black, 'HEARTS': Colors.red, 'DIAMONDS': Colors.red, 'CLUBS': Colors.black};
-
-  void add(String r, String s) {
-    if (cards.length >= widget.max) return;
-    if (!cards.any((c) => c['r'] == r && c['s'] == s)) setState(() => cards.add({'r': r, 's': s}));
-  }
-
-  @override
-  Widget build(BuildContext context) => Scaffold(
-    appBar: AppBar(title: Text(widget.title)),
-    body: Column(children: [
-      if (cards.isNotEmpty) Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(color: AC.PN, borderRadius: const BorderRadius.vertical(bottom: Radius.circular(20))),
-        child: Row(
-          mainAxisAlignment: MainAxisAlignment.center,
-          children: cards.map<Widget>((x) => VisCard(rank: x['r'], suit: x['s'])).toList(),
-        ),
-      ),
-      Expanded(
-        child: SingleChildScrollView(
-          padding: const EdgeInsets.all(16),
-          child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
-            const Text('Wert wahlen:', style: TextStyle(color: Colors.white70, fontSize: 16)),
-            const SizedBox(height: 12),
-            Wrap(spacing: 8, runSpacing: 8, children: rks.map((r) => GestureDetector(
-              onTap: () => _pick(r),
-              child: Container(
-                width: 50, height: 70,
-                decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(8), border: Border.all(color: Colors.white24)),
-                child: Center(child: Text(r, style: const TextStyle(fontSize: 20, color: Colors.white, fontWeight: FontWeight.bold))),
-              ),
-            )).toList()),
-            const SizedBox(height: 24),
-            if (cards.isNotEmpty) ...[
-              const Text('Ausgewahlt:', style: TextStyle(color: Colors.white70)),
-              const SizedBox(height: 8),
-              Wrap(spacing: 8, runSpacing: 8, children: cards.asMap().entries.map((e) => GestureDetector(
-                onTap: () => setState(() => cards.removeAt(e.key)),
-                child: Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
-                  decoration: BoxDecoration(color: Colors.red.shade800, borderRadius: BorderRadius.circular(8)),
-                  child: Text(e.value['r'] + simg[e.value['s']], style: const TextStyle(fontSize: 18, color: Colors.white)),
-                ),
-              )).toList()),
-              const SizedBox(height: 16),
-            ],
-            ElevatedButton(onPressed: () => widget.onSave(cards), style: ElevatedButton.styleFrom(backgroundColor: AC.P, foregroundColor: Colors.black, padding: const EdgeInsets.all(16)),
-              child: Text('SPEICHERN (' + cards.length.toString() + '/' + widget.max.toString() + ')', style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold))),
-          ]),
-        ),
-      ),
-    ]),
-  );
-
-  void _pick(String r) {
-    showModalBottomSheet(context: context, backgroundColor: AC.PN,
-      builder: (ctx) => Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
-        const Text('Farbe wahlen:', style: TextStyle(fontSize: 18, color: Colors.white)),
-        const SizedBox(height: 20),
-        Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: sts.map((s) => GestureDetector(
-          onTap: () { add(r, s); Navigator.pop(ctx); },
-          child: Container(
-            width: 60, height: 80,
-            decoration: BoxDecoration(color: s == 'HEARTS' || s == 'DIAMONDS' ? Colors.red : Colors.black, borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white, width: 2)),
-            child: Center(child: Text(simg[s]!, style: const TextStyle(fontSize: 36, color: Colors.white))),
-          ),
-        )).toList()),
-        const SizedBox(height: 20),
+    bewerteHand();
+    String strasse = widget.tischKarten.isEmpty ? 'Pre-Flop' : widget.tischKarten.length == 3 ? 'Flop' : widget.tischKarten.length == 4 ? 'Turn' : 'River';
+    return SingleChildScrollView(padding: const EdgeInsets.all(16), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+      Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(16)), child: Column(children: [
+        const Text('🃏 MEINE KARTEN', style: TextStyle(color: Colors.grey, fontSize: 14, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: widget.meineKarten.isEmpty ? [const Text('Noch keine', style: TextStyle(fontSize: 24, color: Colors.grey))] : widget.meineKarten.map<Widget>((k) => Spielkarte(rang: k['r'], farbe: k['s'])).toList()),
       ])),
-    );
+      const SizedBox(height: 16),
+      Container(padding: const EdgeInsets.all(20), decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(16)), child: Column(children: [
+        Text('🃏 TISCH (${widget.tischKarten.length})', style: const TextStyle(color: Colors.grey, fontSize: 14, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        Row(mainAxisAlignment: MainAxisAlignment.center, children: widget.tischKarten.isEmpty ? [const Text('Noch keine', style: TextStyle(fontSize: 24, color: Colors.grey))] : widget.tischKarten.map<Widget>((k) => Spielkarte(rang: k['r'], farbe: k['s'])).toList()),
+      ])),
+      const SizedBox(height: 20),
+      if (widget.meineKarten.isNotEmpty) Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: AC.P.withAlpha(26), borderRadius: BorderRadius.circular(12)), child: Column(children: [Text('🎯 Deine Hand: ' + handName(handRang), style: const TextStyle(color: AC.P, fontSize: 18, fontWeight: FontWeight.bold)), Text('Straße: ' + strasse, style: const TextStyle(color: Colors.grey, fontSize: 14))])),
+      const SizedBox(height: 20),
+      if (empfehlung.isNotEmpty) Container(padding: const EdgeInsets.all(24), decoration: BoxDecoration(gradient: LinearGradient(colors: empfehlung == 'ALL-IN' ? [Colors.red, Colors.red.shade700] : [AC.P, AC.P.withAlpha(179)], begin: Alignment.topLeft, end: Alignment.bottomRight), borderRadius: BorderRadius.circular(16)), child: Column(children: [const Text('👉 EMPFEHLUNG', style: TextStyle(fontSize: 14, color: Colors.black54)), const SizedBox(height: 8), Text(empfehlung, style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black))])),
+      const SizedBox(height: 20),
+      Container(padding: const EdgeInsets.all(16), decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(12)), child: Column(children: [
+        Row(children: [const SizedBox(width: 100, child: Text('📍 Position:', style: TextStyle(color: Colors.white70))), Expanded(child: DropdownButton<int>(value: position, isExpanded: true, underline: const SizedBox(), dropdownColor: AC.PN, items: List.generate(positionen.length, (i) => DropdownMenuItem(value: i, child: Text(positionen[i]))), onChanged: (v) => setState(() => position = v ?? 2)))]),
+        const SizedBox(height: 12),
+        Row(children: [SizedBox(width: 100, child: Text('💰 Pot: ${pot.toInt()}€', style: const TextStyle(color: Colors.white70))), Expanded(child: Slider(value: pot, min: 0, max: 500, activeColor: AC.P, onChanged: (v) => setState(() => pot = v)))]),
+        Row(children: [SizedBox(width: 100, child: Text('💵 Zu zahlen: ${zuZahlen.toInt()}€', style: const TextStyle(color: Colors.white70))), Expanded(child: Slider(value: zuZahlen, min: 0, max: 200, activeColor: AC.P, onChanged: (v) => setState(() => zuZahlen = v)))]),
+        Row(children: [SizedBox(width: 100, child: Text('🎒 Stack: ${stack.toInt()}€', style: const TextStyle(color: Colors.white70))), Expanded(child: Slider(value: stack, min: 0, max: 500, activeColor: AC.P, onChanged: (v) => setState(() => stack = v)))]),
+      ])),
+      const SizedBox(height: 16),
+      SizedBox(height: 60, child: ElevatedButton(onPressed: berechne, style: ElevatedButton.styleFrom(backgroundColor: AC.P, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.calculate, size: 28), SizedBox(width: 12), Text('EMPFEHLUNG BERECHNEN', style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold))]))),
+    ]));
+  }
+}
+
+class Spielkarte extends StatelessWidget {
+  final String rang, farbe;
+  const Spielkarte({super.key, required this.rang, required this.farbe});
+  @override
+  Widget build(BuildContext context) {
+    bool rot = farbe == 'HEARTS' || farbe == 'DIAMONDS';
+    String symbol = farbe == 'SPADES' ? '♠' : farbe == 'HEARTS' ? '♥' : farbe == 'DIAMONDS' ? '♦' : '♣';
+    return Container(width: 70, height: 100, margin: const EdgeInsets.symmetric(horizontal: 6), decoration: BoxDecoration(color: rot ? Colors.white : Colors.black, borderRadius: BorderRadius.circular(10), border: Border.all(color: rot ? Colors.red : Colors.white, width: 3)), child: Column(mainAxisAlignment: MainAxisAlignment.center, children: [Text(rang, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: rot ? Colors.red : Colors.white)), Text(symbol, style: TextStyle(fontSize: 32, color: rot ? Colors.red : Colors.white))]));
+  }
+}
+
+class KartenEingabe extends StatefulWidget {
+  final String titel;
+  final int max;
+  final List Karten;
+  final Function(List) onSave;
+  const KartenEingabe({super.key, required this.titel, required this.max, required this.Karten, required this.onSave});
+  @override
+  State<KartenEingabe> createState() => _KartenEingabeState();
+}
+
+class _KartenEingabeState extends State<KartenEingabe> {
+  List karten = [];
+  final rangWerte = ['A', 'K', 'Q', 'J', '10', '9', '8', '7', '6', '5', '4', '3', '2'];
+  final farbenMap = {'SPADES': '♠', 'HEARTS': '♥', 'DIAMONDS': '♦', 'CLUBS': '♣'};
+  final farbFarbe = {'SPADES': Colors.black, 'HEARTS': Colors.red, 'DIAMONDS': Colors.red, 'CLUBS': Colors.black};
+
+  @override
+  void initState() { super.initState(); karten = List.from(widget.Karten); }
+  
+  void addKarte(String r, String f) {
+    if (karten.length < widget.max && !karten.any((k) => k['r'] == r && k['s'] == f)) {
+      setState(() => karten.add({'r': r, 's': f}));
+    }
+  }
+
+  void farbeWaehlen(BuildContext ctx, String rang) {
+    showModalBottomSheet(context: ctx, backgroundColor: AC.PN, builder: (c) => Padding(padding: const EdgeInsets.all(24), child: Column(mainAxisSize: MainAxisSize.min, children: [
+      const Text("Wähle die Farbe:", style: TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)),
+      const SizedBox(height: 20),
+      Row(mainAxisAlignment: MainAxisAlignment.spaceEvenly, children: farbenMap.entries.map((e) => GestureDetector(
+        onTap: () { addKarte(rang, e.key); Navigator.pop(c); },
+        child: Container(width: 60, height: 80, decoration: BoxDecoration(color: farbFarbe[e.key], borderRadius: BorderRadius.circular(12), border: Border.all(color: Colors.white, width: 2)), child: Center(child: Text(e.value, style: const TextStyle(fontSize: 40, color: Colors.white))))
+      )).toList())
+    ])));
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    List<Widget> rangButtons = [];
+    for (var r in rangWerte) {
+      rangButtons.add(GestureDetector(
+        onTap: () => farbeWaehlen(context, r),
+        child: Container(width: 55, height: 75, decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(10), border: Border.all(color: AC.P, width: 2)), child: Center(child: Text(r, style: const TextStyle(fontSize: 22, color: Colors.white, fontWeight: FontWeight.bold))))
+      ));
+    }
+    
+    List<Widget> ausgewaehlt = [];
+    for (var i = 0; i < karten.length; i++) {
+      ausgewaehlt.add(GestureDetector(
+        onTap: () => setState(() => karten.removeAt(i)),
+        child: Container(padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 8), decoration: BoxDecoration(color: farbFarbe[karten[i]['s']], borderRadius: BorderRadius.circular(8)), child: Text(karten[i]['r'] + farbenMap[karten[i]['s']]!, style: const TextStyle(fontSize: 18, color: Colors.white, fontWeight: FontWeight.bold)))
+      ));
+    }
+
+    return Column(children: [
+      if (karten.isNotEmpty) Container(width: double.infinity, padding: const EdgeInsets.all(24), decoration: const BoxDecoration(color: AC.PN, borderRadius: BorderRadius.vertical(bottom: Radius.circular(24))), child: Column(children: [
+        Text('Ausgewählt: ${karten.length}/${widget.max}', style: const TextStyle(color: AC.P, fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        Wrap(alignment: WrapAlignment.center, spacing: 12, children: karten.map<Widget>((k) => GestureDetector(onTap: () => setState(() => karten.remove(k)), child: Spielkarte(rang: k['r'], farbe: k['s']))).toList()),
+      ])),
+      Expanded(child: SingleChildScrollView(padding: const EdgeInsets.all(20), child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
+        const Text('🎴 Wähle die Kartenwerte:', style: TextStyle(color: Colors.white70, fontSize: 16, fontWeight: FontWeight.bold)),
+        const SizedBox(height: 16),
+        Wrap(spacing: 10, runSpacing: 10, children: rangButtons),
+        const SizedBox(height: 24),
+        if (karten.isNotEmpty) ...[const Text('✖️ Tippe auf eine Karte zum Entfernen:', style: TextStyle(color: Colors.white70)), const SizedBox(height: 8), Wrap(spacing: 8, runSpacing: 8, children: ausgewaehlt), const SizedBox(height: 16)],
+        SizedBox(height: 60, child: ElevatedButton(onPressed: () { widget.onSave(karten); Navigator.pop(context); }, style: ElevatedButton.styleFrom(backgroundColor: AC.P, foregroundColor: Colors.black, shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12))), child: const Row(mainAxisAlignment: MainAxisAlignment.center, children: [Icon(Icons.save, size: 24), SizedBox(width: 12), Text('SPEICHERN', style: TextStyle(fontSize: 18, fontWeight: FontWeight.bold))]))),
+      ]))),
+    ]);
   }
 }
