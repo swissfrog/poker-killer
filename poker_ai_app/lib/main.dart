@@ -1,8 +1,8 @@
 import 'package:flutter/material.dart';
-void main() => runApp(const PokerKillerApp());
+void main() => runApp(const OttoApp());
 
 class AC {static const C P=Color(0xFF00FF88),BG=Color(0xFF1A1A2E),PN=Color(0xFF16213E);}
-class PKA extends StatelessWidget {const PKA({super.key});@override Widget build(BuildContext context)=>MaterialApp(title:'PokerKiller',debugShowCheckedModeBanner:false,theme:ThemeData.dark().copyWith(scaffoldBackgroundColor:AC.BG,primaryColor:AC.P),home:const MN());}
+class PKA extends StatelessWidget {const PKA({super.key});@override Widget build(BuildContext context)=>MaterialApp(title:'Otto',debugShowCheckedModeBanner:false,theme:ThemeData.dark().copyWith(scaffoldBackgroundColor:AC.BG,primaryColor:AC.P),home:const MN());}
 class MN extends StatefulWidget{const MN({super.key});@override State<MN>createState()=>_MNState();}
 class _MNState extends State<MN>{int i=0;List M=[];List B=[];
 @override Widget build(BuildContext context)=>Scaffold(body:IndexedStack(index:i,children:[RP(M,B),SP('Meine 2 Karten',(c)=>setState(()=>M=c)),SP('Tisch (5)',(c)=>setState(()=>B=c))]),
@@ -12,9 +12,9 @@ class RP extends StatefulWidget{final List M,B;const RP(this.M,this.B,{super.key
 class _RPState extends State<RP>{int p=2,hr=0;double pt=100,tc=20,ss=200;String r='';final ps=['BB','SB','BTN','CO','MP','UTG'];
 void _rec(){int st=widget.B.isEmpty?0:widget.B.length<4?1:widget.B.length<5?2:3;double sc=(hr/8)*0.5+((6-p)/6)*0.3+0.2;if(ss<20)sc-=0.2;double po=tc>0?tc/(pt+tc):0;bool pf=po<(hr/8);if(tc>ss*0.4)r='FOLD';else if(sc>0.7)r=ss<40?'ALL-IN':'RAISE';else if(sc>0.45)r=pf?'CALL':'CHECK';else r=tc==0?'CHECK':'FOLD';setState((){});}
 void _ev(){if(widget.M.isEmpty){hr=0;return;}List rs=[...widget.M.map((c)=>c['r']),...widget.B.map((c)=>c['r'])];List ss_=[...widget.M.map((c)=>c['s']),...widget.B.map((c)=>c['s'])];Map rc={},sc={};for(var x in rs)rc[x]=(rc[x]??0)+1;for(var x in ss_)sc[x]=(sc[x]??0)+1;if(sc.values.any((c)=>c>=5))hr=5;else if(rc.values.any((c)=>c>=4))hr=7;else if(rc.values.any((c)=>c==3)&&rc.values.any((c)>=2))hr=6;else if(rc.values.any((c)=>c==3))hr=3;else{hr=rc.values.where((c)=>c==2).length>=2?2:(rc.values.any((c)=>c==2)?1:0);}}
-@override Widget build(BuildContext context){_ev();String sn=widget.B.isEmpty?'Preflop':widget.B.length==3?'Flop':widget.B.length==4?'Turn':'River';return Scaffold(appBar:AppBar(title:const Row(mainAxisSize:MainAxisSize.min,children:[Text('🃏 '),Text('PokerKiller',style:TextStyle(fontWeight:FontWeight.bold))]),centerTitle:true),
+@override Widget build(BuildContext context){_ev();String sn=widget.B.isEmpty?'Preflop':widget.B.length==3?'Flop':widget.B.length==4?'Turn':'River';return Scaffold(appBar:AppBar(title:const Row(mainAxisSize:MainAxisSize.min,children:[Text('🦦 '),Text('Otto',style:TextStyle(fontWeight:FontWeight.bold))]),centerTitle:true),
 body:SingleChildScrollView(padding:const EdgeInsets.all(16),child:Column(crossAxisAlignment:CrossAxisAlignment.stretch,children:[
-_('🃏 MEINE 2 KARTEN',widget.M),_('♠♣ TISCH: ${widget.B.length} Karten',widget.B),
+_('🦦 MEINE 2 KARTEN',widget.M),_('♠♣ TISCH: ${widget.B.length} Karten',widget.B),
 if(hr>0||widget.M.isNotEmpty)Container(padding:const EdgeInsets.all(12),margin:const EdgeInsets.only(bottom:12),decoration:BoxDecoration(color:AC.P.withOpacity(0.2),borderRadius:BorderRadius.circular(8)),
 child:Row(mainAxisAlignment:MainAxisAlignment.center,children:[const Icon(Icons.analytics,color:AC.P),const SizedBox(width:8),Text('Hand: ${_h(hr)} | $sn',style:TextStyle(color:AC.P,fontSize:16,fontWeight:FontWeight.bold))])),
 if(r.isNotEmpty)Container(padding:const EdgeInsets.all(24),decoration:BoxDecoration(gradient:LinearGradient(colors:r=='ALL-IN'?[Colors.red,Colors.red.shade700]:[AC.P,AC.P.withOpacity(0.7)],begin:Alignment.topLeft,end:Alignment.bottomRight),borderRadius:BorderRadius.circular(16)),
