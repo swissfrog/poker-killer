@@ -63,7 +63,7 @@ agent = DQNAgent(
     learning_rate=5e-4,
     batch_size=256,
     replay_memory_size=100_000,
-    replay_memory_init_size=1_000,
+    replay_memory_init_size=100,
     train_every=1,
     epsilon_start=1.0,
     epsilon_end=0.05,
@@ -113,7 +113,7 @@ with Logger(LOG_DIR) as logger:
                 learning_rate=5e-4,
                 batch_size=256,
                 replay_memory_size=100_000,
-                replay_memory_init_size=1_000,
+                replay_memory_init_size=100,
             )
             self_play_agent.load(SAVE_PATH)
             env.set_agents([agent, self_play_agent])
