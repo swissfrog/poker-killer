@@ -29,6 +29,83 @@ void main() {
   runApp(const PokerKillerApp());
 }
 
+class PokerKillerApp extends StatelessWidget {
+  const PokerKillerApp({super.key});
+
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: AppConfig.appName,
+      debugShowCheckedModeBanner: false,
+      theme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: AppConfig.bgColor,
+        primaryColor: AppConfig.primaryColor,
+        colorScheme: ColorScheme.fromSwatch().copyWith(
+          secondary: AppConfig.primaryColor,
+        ),
+        appBarTheme: const AppBarTheme(
+          backgroundColor: AppConfig.panelColor,
+          elevation: 0,
+        ),
+        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
+          backgroundColor: AppConfig.panelColor,
+          selectedItemColor: AppConfig.primaryColor,
+          unselectedItemColor: Colors.grey,
+        ),
+      ),
+      home: const MainNavigator(),
+    );
+  }
+}
+
+class MainNavigator extends StatefulWidget {
+  const MainNavigator({super.key});
+
+  @override
+  State<MainNavigator> createState() => _MainNavigatorState();
+}
+
+class _MainNavigatorState extends State<MainNavigator> {
+  int _selectedIndex = 0;
+
+  static final List<Widget> _pages = [
+    const RecommenderPage(),
+    const CameraPage(),
+    const TournamentPage(),
+    const StatsPage(),
+    const SettingsPage(),
+  ];
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
+      body: _pages[_selectedIndex],
+      bottomNavigationBar: BottomNavigationBar(
+        currentIndex: _selectedIndex,
+        onTap: (index) => setState(() => _selectedIndex = index),
+        type: BottomNavigationBarType.fixed,
+        items: [
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.casino),
+              label: AppConfig.t('recommendation')),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.camera_alt),
+              label: AppConfig.t('camera')),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.emoji_events),
+              label: AppConfig.t('tournament')),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.bar_chart),
+              label: AppConfig.t('stats')),
+          BottomNavigationBarItem(
+              icon: const Icon(Icons.settings),
+              label: AppConfig.t('settings')),
+        ],
+      ),
+    );
+  }
+}
+
 // ===================== APP CONFIG =====================
 
 class AppConfig {
