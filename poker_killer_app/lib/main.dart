@@ -17,11 +17,11 @@ class AppConfig {
   static const String version = '1.0.0';
   static const Color primaryColor = Color(0xFF00ff88);
   static const Color bgColor = Color(0xFF1a1a2e);
-  static const Color panelColor = Color(0xFF16213e);
-  
+  static const Color panelColor = Color(0xFF1E2A3A);
+
   static const List<String> languages = ['DE', 'EN'];
   static String currentLang = 'DE';
-  
+
   static final Map<String, Map<String, String>> translations = {
     'DE': {
       'recommendation': 'Empfehlung',
@@ -82,73 +82,662 @@ class AppConfig {
       'tracking': 'Tracking',
     },
   };
-  
+
   static String t(String key) {
     return translations[currentLang]?[key] ?? key;
   }
 }
 
-class PokerKillerApp extends StatelessWidget {
-  const PokerKillerApp({super.key});
+// ===================== CARD MODEL =====================
+
+/// Represents a single playing card (rank + suit).
+class CardModel {
+  final String rank; // '2'-'9', 'T', 'J', 'Q', 'K', 'A'
+  final String suit; // '♠', '♥', '♦', '♣'
+
+  const CardModel({required this.rank, required this.suit});
+
+  String get display => '$rank$suit';
+
+  Color get suitColor =>
+      (suit == '♥' || suit == '♦') ? Colors.red : Colors.black;
+
+  /// Numeric rank value for straight detection (2=2 … A=14)
+  int get rankValue {
+    const map = {
+      '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+      '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+    };
+    return map[rank] ?? 2;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is CardModel && other.rank == rank && other.suit == suit;
+
+  @override
+  int get hashCode => rank.hashCode ^ suit.hashCode;
+}
+
+// ===================== BOARD TEXTURE ANALYSIS =====================
+
+class BoardAnalysis {
+  final String texture;     // 'dry', 'wet', 'paired'
+  final bool flushDraw;     // 2+ same suit
+  final bool straightDraw;  // 3+ consecutive ranks
+  final bool paired;        // any rank appears 2+
+  final int dangerScore;    // 0-10
+  final String label;       // emoji + text
+
+  const BoardAnalysis({
+    required this.texture,
+    required this.flushDraw,
+    required this.straightDraw,
+    required this.paired,
+    required this.dangerScore,
+    required this.label,
+  });
+}
+
+BoardAnalysis analyzeBoardTexture(List<CardModel> board) {
+  if (board.isEmpty) {
+    return const BoardAnalysis(
+      texture: 'unknown',
+      flushDraw: false,
+      straightDraw: false,
+      paired: false,
+      dangerScore: 0,
+      label: '—',
+    );
+  }
+
+  // Flush draw: 2+ cards of same suit
+  final suitCounts = <String, int>{};
+  for (final c in board) {
+    suitCounts[c.suit] = (suitCounts[c.suit] ?? 0) + 1;
+  }
+  final flushDraw = suitCounts.values.any((v) => v >= 2);
+
+  // Paired board: any rank appears 2+
+  final rankCounts = <String, int>{};
+  for (final c in board) {
+    rankCounts[c.rank] = (rankCounts[c.rank] ?? 0) + 1;
+  }
+  final paired = rankCounts.values.any((v) => v >= 2);
+
+  // Straight draw: 3+ ranks that span a window of ≤5 (connectedness)
+  final ranks = board.map((c) => c.rankValue).toSet().toList()..sort();
+  bool straightDraw = false;
+  if (ranks.length >= 3) {
+    for (int i = 0; i <= ranks.length - 3; i++) {
+      final window = ranks.sublist(i, i + 3);
+      if (window.last - window.first <= 4) {
+        straightDraw = true;
+        break;
+      }
+    }
+  }
+
+  // Texture classification
+  final String texture;
+  final String label;
+  int danger = 0;
+
+  if (paired) {
+    texture = 'paired';
+    label = '🔄 Paired Board';
+    danger = 5;
+  } else if (flushDraw && straightDraw) {
+    texture = 'wet';
+    label = '🌊 Wet Board';
+    danger = 8;
+  } else if (flushDraw || straightDraw) {
+    texture = 'wet';
+    label = '💧 Semi-Wet Board';
+    danger = 5;
+  } else {
+    texture = 'dry';
+    label = '🏜️ Dry Board';
+    danger = 2;
+  }
+
+  return BoardAnalysis(
+    texture: texture,
+    flushDraw: flushDraw,
+    straightDraw: straightDraw,
+    paired: paired,
+    dangerScore: danger,
+    label: label,
+  );
+}
+
+// ===================== HAND vs BOARD DRAW DETECTION =====================
+
+class DrawInfo {
+  final String label;
+  final bool isMade;
+
+  const DrawInfo({required this.label, required this.isMade});
+}
+
+/// Detects draws or made hands when hole cards are known against the board.
+/// Returns a list of detections (empty if no hole cards or nothing notable).
+List<DrawInfo> detectDraws(List<CardModel> holeCards, List<CardModel> board) {
+  if (holeCards.isEmpty || board.isEmpty) return [];
+
+  final combined = [...holeCards, ...board];
+  final results = <DrawInfo>[];
+
+  // ── Flush / Flush Draw ────────────────────────────────────────────────
+  final suitMap = <String, List<CardModel>>{};
+  for (final c in combined) {
+    suitMap.putIfAbsent(c.suit, () => []).add(c);
+  }
+  for (final entry in suitMap.entries) {
+    if (entry.value.length >= 5) {
+      results.add(const DrawInfo(label: 'Made Hand: Flush ♦♥♠♣', isMade: true));
+    } else if (entry.value.length == 4) {
+      results.add(const DrawInfo(label: 'Draw Detected: Flush Draw 🎨', isMade: false));
+    }
+  }
+
+  // ── Straight / Straight Draw ──────────────────────────────────────────
+  final rankVals = combined.map((c) => c.rankValue).toSet().toList()..sort();
+  // Include low ace (A=1)
+  if (rankVals.contains(14)) rankVals.insert(0, 1);
+  bool foundStraight = false;
+  int consecutiveMax = 0;
+  for (int i = 0; i < rankVals.length; i++) {
+    int streak = 1;
+    for (int j = i + 1; j < rankVals.length; j++) {
+      if (rankVals[j] == rankVals[j - 1] + 1) {
+        streak++;
+      } else {
+        break;
+      }
+    }
+    if (streak > consecutiveMax) consecutiveMax = streak;
+    if (streak >= 5 && !foundStraight) {
+      foundStraight = true;
+      results.add(const DrawInfo(label: 'Made Hand: Straight ✅', isMade: true));
+    }
+  }
+  if (!foundStraight && consecutiveMax == 4) {
+    results.add(const DrawInfo(label: 'Draw Detected: Open-Ended Straight Draw 📏', isMade: false));
+  } else if (!foundStraight && consecutiveMax == 3) {
+    results.add(const DrawInfo(label: 'Draw Detected: Gutshot 🎯', isMade: false));
+  }
+
+  // ── Pairs, Trips, Full House ──────────────────────────────────────────
+  final rankCount = <String, int>{};
+  for (final c in combined) {
+    rankCount[c.rank] = (rankCount[c.rank] ?? 0) + 1;
+  }
+  final pairs = rankCount.values.where((v) => v == 2).length;
+  final trips = rankCount.values.where((v) => v == 3).length;
+  final quads = rankCount.values.where((v) => v >= 4).length;
+
+  if (quads > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Four of a Kind 🎰', isMade: true));
+  } else if (trips > 0 && pairs > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Full House 🏠', isMade: true));
+  } else if (trips > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Three of a Kind ✅', isMade: true));
+  } else if (pairs >= 2) {
+    results.add(const DrawInfo(label: 'Made Hand: Two Pair ✅', isMade: true));
+  } else if (pairs == 1) {
+    // Check if the pair is from hole cards (pocket pair) and board is paired → Full House draw
+    final holeRanks = holeCards.map((c) => c.rank).toList();
+    final boardRankCount = <String, int>{};
+    for (final c in board) {
+      boardRankCount[c.rank] = (boardRankCount[c.rank] ?? 0) + 1;
+    }
+    final boardPaired = boardRankCount.values.any((v) => v >= 2);
+    final holePaired = holeRanks.length == 2 && holeRanks[0] == holeRanks[1];
+    if (holePaired && boardPaired) {
+      results.add(const DrawInfo(
+          label: 'Draw Detected: Full House Draw (Pocket Pair + Paired Board) 🏠', isMade: false));
+    } else {
+      results.add(const DrawInfo(label: 'Made Hand: One Pair ✅', isMade: true));
+    }
+  }
+
+  return results;
+}
+
+// ===================== COMMUNITY CARDS WIDGET =====================
+
+class CommunityCardsWidget extends StatefulWidget {
+  final List<CardModel> cards;
+  final int street; // 0=Preflop, 1=Flop, 2=Turn, 3=River
+  final ValueChanged<List<CardModel>> onChanged;
+
+  const CommunityCardsWidget({
+    super.key,
+    required this.cards,
+    required this.street,
+    required this.onChanged,
+  });
+
+  @override
+  State<CommunityCardsWidget> createState() => _CommunityCardsWidgetState();
+}
+
+class _CommunityCardsWidgetState extends State<CommunityCardsWidget> {
+  static const List<String> ranks = [
+    '2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'
+  ];
+  static const List<String> suits = ['♠', '♥', '♦', '♣'];
+
+  /// Max cards allowed per street
+  int get _maxCards {
+    switch (widget.street) {
+      case 1: return 3; // Flop
+      case 2: return 4; // Turn
+      case 3: return 5; // River
+      default: return 0; // Preflop → no board
+    }
+  }
+
+  void _addCard() async {
+    if (widget.cards.length >= _maxCards) return;
+    final card = await showModalBottomSheet<CardModel>(
+      context: context,
+      backgroundColor: AppConfig.panelColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _CardPickerSheet(
+        existingCards: widget.cards,
+        ranks: ranks,
+        suits: suits,
+      ),
+    );
+    if (card != null) {
+      widget.onChanged([...widget.cards, card]);
+    }
+  }
+
+  void _removeCard(int index) {
+    final updated = List<CardModel>.from(widget.cards)..removeAt(index);
+    widget.onChanged(updated);
+  }
 
   @override
   Widget build(BuildContext context) {
-    return MaterialApp(
-      title: AppConfig.appName,
-      debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
-        scaffoldBackgroundColor: AppConfig.bgColor,
-        primaryColor: AppConfig.primaryColor,
-        colorScheme: ColorScheme.fromSwatch().copyWith(
-          secondary: AppConfig.primaryColor,
-        ),
-        appBarTheme: const AppBarTheme(
-          backgroundColor: AppConfig.panelColor,
-          elevation: 0,
-        ),
-        bottomNavigationBarTheme: const BottomNavigationBarThemeData(
-          backgroundColor: AppConfig.panelColor,
-          selectedItemColor: AppConfig.primaryColor,
-          unselectedItemColor: Colors.grey,
-        ),
+    if (widget.street == 0) return const SizedBox.shrink();
+
+    final streetLabel = ['', 'Flop', 'Turn', 'River'][widget.street];
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppConfig.panelColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
       ),
-      home: const MainNavigator(),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('🃏 ', style: TextStyle(fontSize: 16)),
+              Text(
+                'Community Cards — $streetLabel',
+                style: const TextStyle(
+                    color: Colors.grey, fontSize: 12, letterSpacing: 0.5),
+              ),
+              const Spacer(),
+              if (widget.cards.isNotEmpty)
+                GestureDetector(
+                  onTap: () => widget.onChanged([]),
+                  child: const Text('Reset',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            runSpacing: 8,
+            children: [
+              // Existing cards as chips
+              ...widget.cards.asMap().entries.map((entry) {
+                final i = entry.key;
+                final card = entry.value;
+                return GestureDetector(
+                  onLongPress: () => _removeCard(i),
+                  child: Container(
+                    padding:
+                        const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                      boxShadow: [
+                        BoxShadow(
+                          color: Colors.black.withOpacity(0.3),
+                          blurRadius: 4,
+                          offset: const Offset(0, 2),
+                        ),
+                      ],
+                    ),
+                    child: Text(
+                      card.display,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: card.suitColor,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              // Add button (only if slots remain)
+              if (widget.cards.length < _maxCards)
+                GestureDetector(
+                  onTap: _addCard,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                          color: AppConfig.primaryColor.withOpacity(0.6),
+                          style: BorderStyle.solid),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '+ Karte (${widget.cards.length}/$_maxCards)',
+                      style: const TextStyle(
+                          color: AppConfig.primaryColor, fontSize: 13),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            'Long-press to remove a card',
+            style: TextStyle(color: Colors.grey.shade700, fontSize: 10),
+          ),
+        ],
+      ),
     );
   }
 }
 
-class MainNavigator extends StatefulWidget {
-  const MainNavigator({super.key});
+class _CardPickerSheet extends StatefulWidget {
+  final List<CardModel> existingCards;
+  final List<String> ranks;
+  final List<String> suits;
+
+  const _CardPickerSheet({
+    required this.existingCards,
+    required this.ranks,
+    required this.suits,
+  });
 
   @override
-  State<MainNavigator> createState() => _MainNavigatorState();
+  State<_CardPickerSheet> createState() => _CardPickerSheetState();
 }
 
-class _MainNavigatorState extends State<MainNavigator> {
-  int _selectedIndex = 0;
-  
-  static final List<Widget> _pages = [
-    const RecommenderPage(),
-    const CameraPage(),
-    const TournamentPage(),
-    const StatsPage(),
-    const SettingsPage(),
-  ];
+class _CardPickerSheetState extends State<_CardPickerSheet> {
+  String _selectedRank = 'A';
+  String _selectedSuit = '♠';
+
+  bool get _isDuplicate => widget.existingCards
+      .any((c) => c.rank == _selectedRank && c.suit == _selectedSuit);
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: _pages[_selectedIndex],
-      bottomNavigationBar: BottomNavigationBar(
-        currentIndex: _selectedIndex,
-        onTap: (index) => setState(() => _selectedIndex = index),
-        type: BottomNavigationBarType.fixed,
-        items: [
-          BottomNavigationBarItem(icon: const Icon(Icons.casino), label: AppConfig.t('recommendation')),
-          BottomNavigationBarItem(icon: const Icon(Icons.camera_alt), label: AppConfig.t('camera')),
-          BottomNavigationBarItem(icon: const Icon(Icons.emoji_events), label: AppConfig.t('tournament')),
-          BottomNavigationBarItem(icon: const Icon(Icons.bar_chart), label: AppConfig.t('stats')),
-          BottomNavigationBarItem(icon: const Icon(Icons.settings), label: AppConfig.t('settings')),
+    return Padding(
+      padding: const EdgeInsets.all(20),
+      child: Column(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          const Text('Karte auswählen',
+              style: TextStyle(fontSize: 16, fontWeight: FontWeight.bold)),
+          const SizedBox(height: 16),
+          // Rank picker
+          const Text('Rang', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          const SizedBox(height: 8),
+          Wrap(
+            spacing: 6,
+            runSpacing: 6,
+            alignment: WrapAlignment.center,
+            children: widget.ranks.map((r) {
+              final sel = r == _selectedRank;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedRank = r),
+                child: Container(
+                  padding:
+                      const EdgeInsets.symmetric(horizontal: 12, vertical: 8),
+                  decoration: BoxDecoration(
+                    color: sel
+                        ? AppConfig.primaryColor
+                        : AppConfig.bgColor,
+                    borderRadius: BorderRadius.circular(6),
+                    border: Border.all(
+                        color: sel
+                            ? AppConfig.primaryColor
+                            : Colors.grey.shade700),
+                  ),
+                  child: Text(r,
+                      style: TextStyle(
+                          color: sel ? Colors.black : Colors.white,
+                          fontWeight: FontWeight.bold)),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 16),
+          // Suit picker
+          const Text('Farbe', style: TextStyle(color: Colors.grey, fontSize: 12)),
+          const SizedBox(height: 8),
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: widget.suits.map((s) {
+              final sel = s == _selectedSuit;
+              final suitColor = (s == '♥' || s == '♦') ? Colors.red : Colors.white;
+              return GestureDetector(
+                onTap: () => setState(() => _selectedSuit = s),
+                child: Container(
+                  margin: const EdgeInsets.symmetric(horizontal: 6),
+                  padding: const EdgeInsets.all(14),
+                  decoration: BoxDecoration(
+                    color: sel ? suitColor.withOpacity(0.15) : AppConfig.bgColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                        color: sel ? suitColor : Colors.grey.shade700,
+                        width: sel ? 2 : 1),
+                  ),
+                  child: Text(s,
+                      style: TextStyle(
+                          fontSize: 26,
+                          color: suitColor,
+                          fontWeight:
+                              sel ? FontWeight.bold : FontWeight.normal)),
+                ),
+              );
+            }).toList(),
+          ),
+          const SizedBox(height: 16),
+          // Preview
+          Container(
+            padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 12),
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+            ),
+            child: Text(
+              '$_selectedRank$_selectedSuit',
+              style: TextStyle(
+                fontSize: 36,
+                fontWeight: FontWeight.bold,
+                color: (_selectedSuit == '♥' || _selectedSuit == '♦')
+                    ? Colors.red
+                    : Colors.black,
+              ),
+            ),
+          ),
+          const SizedBox(height: 12),
+          if (_isDuplicate)
+            const Text('⚠️ Diese Karte wurde bereits gewählt',
+                style: TextStyle(color: Colors.orange, fontSize: 12)),
+          const SizedBox(height: 8),
+          Row(
+            children: [
+              Expanded(
+                child: OutlinedButton(
+                  onPressed: () => Navigator.pop(context),
+                  child: const Text('Abbrechen'),
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: _isDuplicate
+                      ? null
+                      : () => Navigator.pop(
+                          context,
+                          CardModel(
+                              rank: _selectedRank, suit: _selectedSuit)),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: AppConfig.primaryColor,
+                    foregroundColor: Colors.black,
+                  ),
+                  child: const Text('Hinzufügen'),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: 8),
+        ],
+      ),
+    );
+  }
+}
+
+// ===================== HOLE CARDS PICKER WIDGET =====================
+
+class HoleCardsWidget extends StatefulWidget {
+  final List<CardModel> cards;
+  final ValueChanged<List<CardModel>> onChanged;
+
+  const HoleCardsWidget({
+    super.key,
+    required this.cards,
+    required this.onChanged,
+  });
+
+  @override
+  State<HoleCardsWidget> createState() => _HoleCardsWidgetState();
+}
+
+class _HoleCardsWidgetState extends State<HoleCardsWidget> {
+  static const List<String> ranks = [
+    '2', '3', '4', '5', '6', '7', '8', '9', 'T', 'J', 'Q', 'K', 'A'
+  ];
+  static const List<String> suits = ['♠', '♥', '♦', '♣'];
+
+  void _addCard() async {
+    if (widget.cards.length >= 2) return;
+    final card = await showModalBottomSheet<CardModel>(
+      context: context,
+      backgroundColor: AppConfig.panelColor,
+      shape: const RoundedRectangleBorder(
+        borderRadius: BorderRadius.vertical(top: Radius.circular(20)),
+      ),
+      builder: (ctx) => _CardPickerSheet(
+        existingCards: widget.cards,
+        ranks: ranks,
+        suits: suits,
+      ),
+    );
+    if (card != null) {
+      widget.onChanged([...widget.cards, card]);
+    }
+  }
+
+  void _removeCard(int index) {
+    final updated = List<CardModel>.from(widget.cards)..removeAt(index);
+    widget.onChanged(updated);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppConfig.panelColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('🤚 ', style: TextStyle(fontSize: 16)),
+              const Text('Meine Handkarten (optional)',
+                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+              const Spacer(),
+              if (widget.cards.isNotEmpty)
+                GestureDetector(
+                  onTap: () => widget.onChanged([]),
+                  child: const Text('Reset',
+                      style: TextStyle(color: Colors.redAccent, fontSize: 12)),
+                ),
+            ],
+          ),
+          const SizedBox(height: 10),
+          Wrap(
+            spacing: 8,
+            children: [
+              ...widget.cards.asMap().entries.map((entry) {
+                final card = entry.value;
+                return GestureDetector(
+                  onLongPress: () => _removeCard(entry.key),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 12, vertical: 8),
+                    decoration: BoxDecoration(
+                      color: Colors.white,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      card.display,
+                      style: TextStyle(
+                        fontSize: 22,
+                        fontWeight: FontWeight.bold,
+                        color: card.suitColor,
+                      ),
+                    ),
+                  ),
+                );
+              }),
+              if (widget.cards.length < 2)
+                GestureDetector(
+                  onTap: _addCard,
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(
+                        horizontal: 16, vertical: 8),
+                    decoration: BoxDecoration(
+                      border: Border.all(
+                          color: Colors.blue.shade400.withOpacity(0.6)),
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Text(
+                      '+ Karte (${widget.cards.length}/2)',
+                      style: TextStyle(
+                          color: Colors.blue.shade300, fontSize: 13),
+                    ),
+                  ),
+                ),
+            ],
+          ),
+          const SizedBox(height: 4),
+          Text('Long-press to remove',
+              style: TextStyle(color: Colors.grey.shade700, fontSize: 10)),
         ],
       ),
     );
@@ -180,14 +769,34 @@ class _RecommenderPageState extends State<RecommenderPage> {
   double toCall = 20;
   double stackSize = 200;
 
+  // Community Cards (board)
+  List<CardModel> communityCards = [];
+
+  // Hole Cards (optional, for draw detection)
+  List<CardModel> holeCards = [];
+
   // Opponent Modeling
   double _vpip = 25;
   double _pfr  = 18;
-  
+
+  // Last Hand (Feature 6)
+  int? _lastPosition; int? _lastStreet; int? _lastHandRank;
+  double? _lastPot; double? _lastToCall; double? _lastStackSize;
+
+  // Bet Size Button selection (Feature 7)
+  int _selectedBetBtn = -1;
+
   String recommendation = '';
   String reason = '';
-  String boardTexture = 'unknown';
-  int boardDanger = 0;
+  BoardAnalysis _boardAnalysis = const BoardAnalysis(
+    texture: 'unknown',
+    flushDraw: false,
+    straightDraw: false,
+    paired: false,
+    dangerScore: 0,
+    label: '—',
+  );
+  List<DrawInfo> _draws = [];
   bool isBluff = false;
   bool ttsEnabled = true;
 
@@ -207,7 +816,6 @@ class _RecommenderPageState extends State<RecommenderPage> {
   ];
 
   // ── Stack-Awareness Helper ──────────────────────────────────────────────
-  // Positionen: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
   String _positionHint(int pos, double stackBb) {
     const posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
     final posStr = pos < posNames.length ? posNames[pos] : 'MP';
@@ -222,32 +830,17 @@ class _RecommenderPageState extends State<RecommenderPage> {
     return '$posStr | $stackLabel';
   }
 
-  // Big Blind Annahme: 2 (Standard Cash Game)
   static const double _bigBlindSize = 2.0;
 
-  // ── VERBESSERUNG 5: Nash Push/Fold Lookup-Tabellen ───────────────────────
-  // handRank: 0=High Card, 1=Pair, 2=Two Pair, 3=Three of Kind,
-  //           4=Straight, 5=Flush, 6=Full House, 7=Four of Kind, 8=Straight Flush
-  //
-  // Nash Push-Ranges (Lookup-Set der minimalen handRank-Schwelle pro BB-Zone):
-  //   Zone A: < 8bb  → Any Ace/Pair/KQ/KJ/QJ/T9s+ → rank≥0 (immer pushen)
-  //   Zone B: 8-13bb → A2+/22+/KQ/KJ → rank≥1 (Pair+)
-  //   Zone C: 13-20bb→ A8+/55+/AJs+/KQs → rank≥3 (Three of Kind+ approximiert)
-  //
-  // Calling-Range gegen Push bei <15bb: Top 15% = rank≥3
-
-  /// Prüft Push/Fold-Szenario (Preflop) und gibt Empfehlung zurück, sonst null.
   _NashResult? _nashPushFoldCheck(double stackBb, int rank) {
-    if (street != 0) return null; // Nur Preflop
+    if (street != 0) return null;
 
     if (stackBb < 8) {
-      // Zone A: breiteste Range — immer pushen
       if (rank >= 1) {
         return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push <8bb: ${_rankName(rank)} → Push!');
       }
       return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push <8bb: Breiteste Range → Push!');
     } else if (stackBb < 13) {
-      // Zone B: Pair+ pushen; gegen Push nur Top 15% callen
       if (rank >= 1) {
         return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 8-13bb: ${_rankName(rank)} → Push!');
       }
@@ -256,7 +849,6 @@ class _RecommenderPageState extends State<RecommenderPage> {
       }
       return null;
     } else if (stackBb < 20) {
-      // Zone C: Three of Kind+ pushen; gegen Push nur Top 15% callen
       if (rank >= 3) {
         return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 13-20bb: ${_rankName(rank)} → Push!');
       }
@@ -277,16 +869,14 @@ class _RecommenderPageState extends State<RecommenderPage> {
   }
 
   void _getRecommendation() {
-    // Stack in Big Blinds berechnen (Stack-Awareness)
     final stackBb = stackSize / _bigBlindSize;
 
     // Opponent Modeling: Score-Modifier
     final oppMod = opponentScoreModifier(vpip: _vpip, pfr: _pfr, handScore: handRank / 8.0);
 
-    // Position-Awareness: Late Position (BTN=2, CO=3) gibt Bonus
-    // positions: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
-    final positionBonus = position <= 3 ? (3 - position) * 0.05 : 0.0; // BTN=+0.05, CO=+0.0, MP/UTG: 0
-    final positionPenalty = position >= 4 ? (position - 3) * 0.04 : 0.0; // MP=-0.04, UTG=-0.08
+    // Position-Awareness
+    final positionBonus = position <= 3 ? (3 - position) * 0.05 : 0.0;
+    final positionPenalty = position >= 4 ? (position - 3) * 0.04 : 0.0;
 
     double score = (handRank / 8.0) * 0.6
         + ((6 - position) / 6.0) * 0.3
@@ -295,45 +885,82 @@ class _RecommenderPageState extends State<RecommenderPage> {
         + oppMod
         + 0.1;
 
-    // Stack-Awareness Anpassungen (Short Stack Penalty bleibt für score-basierte Logik)
+    // Stack-Awareness
     if (stackBb < 10) {
       score -= 0.15;
     } else if (stackBb < 20) {
       score -= 0.10;
     }
-    // Deep Stack: Basis-Implied-Odds werden in Verbesserung 7 unten berechnet
 
-    // Board Danger
+    // ── Board Texture Analysis (replaces random boardDanger) ──────────────
+    final board = analyzeBoardTexture(communityCards);
+    setState(() => _boardAnalysis = board);
+
     if (street > 0) {
-      boardTexture = ['dry', 'wet', 'paired'][street % 3];
-      boardDanger = street * 2 + 3;
-      if (boardDanger > 7) score -= 0.15;
+      // Real board danger from analysis
+      final danger = board.dangerScore;
+
+      // Adjust score based on board texture + hand strength
+      if (board.texture == 'wet') {
+        if (handRank <= 2) {
+          // Wet board + weak hand → fold more
+          score -= 0.20;
+        } else if (handRank >= 5) {
+          // Wet board + strong hand → value
+          score += 0.05;
+        } else {
+          score -= 0.08;
+        }
+      } else if (board.texture == 'paired') {
+        // Paired board: trips/boat possible → evaluate carefully
+        if (handRank >= 5) {
+          score += 0.08; // Likely best hand
+        } else if (handRank <= 1) {
+          score -= 0.15; // Dangerous
+        }
+      } else {
+        // Dry board: value bet more freely
+        if (handRank >= 3) score += 0.05;
+      }
+
+      if (danger > 6) score -= 0.15;
     }
 
-    // Bluff Erkennung (GTO) — kein Bluff bei Short Stack
+    // Draw detection
+    final draws = detectDraws(holeCards, communityCards);
+    setState(() => _draws = draws);
+
+    // Adjust score based on detected draws
+    for (final d in draws) {
+      if (d.isMade) {
+        score += 0.05; // Known made hand confirms strength
+      } else {
+        // Drawing hands get a small boost (implied odds)
+        score += 0.03;
+      }
+    }
+
+    // Bluff detection (GTO)
     isBluff = handRank <= 2 && stackBb > 20 && Random().nextDouble() < 0.25;
 
-    // Position-spezifische Hinweise für reason
     final posHint = _positionHint(position, stackBb);
 
-    // ── VERBESSERUNG 7: Implied Odds bei Deep Stack ───────────────────────
-    // Wenn stackBb > 50 UND Preflop/Flop: Implied Odds Bonus addieren
+    // ── Implied Odds at Deep Stack ────────────────────────────────────────
     String impliedOddsReason = '';
     if (stackBb > 50 && (street == 0 || street == 1)) {
       final impliedBonus = (stackBb / 100) * 0.08;
       score += impliedBonus;
       impliedOddsReason = 'Deep Stack Implied Odds +';
-      // Draw-Hände (handRank 3-5: Straight/Flush/Full House) extra Bonus
       if (handRank >= 3 && handRank <= 5) {
         score += 0.05;
         impliedOddsReason = 'Deep Stack Implied Odds + (implied odds boost)';
       }
     }
 
-    // ── VERBESSERUNG 5: Nash Push/Fold Check (höchste Priorität) ─────────
+    // ── Nash Push/Fold Check ──────────────────────────────────────────────
     final nashResult = _nashPushFoldCheck(stackBb, handRank);
 
-    // ── VERBESSERUNG 6: Pot Odds automatisch in Entscheidung einrechnen ──
+    // ── Pot Odds ──────────────────────────────────────────────────────────
     String potOddsReason = '';
     String? potOddsOverride;
     if (toCall > 0 && pot + toCall > 0) {
@@ -343,11 +970,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
       final hasPct = (handEquity * 100).toStringAsFixed(0);
 
       if (handEquity < requiredEquity - 0.05) {
-        // Zu wenig Equity für diesen Call → FOLD erzwingen
         potOddsOverride = 'FOLD';
         potOddsReason = 'Pot Odds Override: FOLD (brauchst $requiredPct%, hast $hasPct%)';
       } else if (handEquity > requiredEquity + 0.10) {
-        // Call/Raise bestätigt — kein Override, aber Info im Reason
         potOddsReason = 'Pot Odds: Call profitable ($hasPct% > $requiredPct%)';
       }
     }
@@ -357,18 +982,16 @@ class _RecommenderPageState extends State<RecommenderPage> {
     String newReason;
 
     if (nashResult != null) {
-      // Nash hat absolute Priorität bei Short-Stack Preflop
       newRec = nashResult.action;
       newReason = nashResult.reason;
     } else if (potOddsOverride != null) {
-      // Pot Odds Override: FOLD erzwingen auch bei hohem Score
       newRec = potOddsOverride;
       newReason = potOddsReason;
     } else if (toCall > stackSize * 0.4) {
-      newRec = 'FOLD';
+      newRec = 'Passen';
       newReason = 'Zu teuer | $posHint';
     } else if (score > 0.75) {
-      newRec = stackBb < 20 ? 'ALL-IN' : 'RAISE';
+      newRec = stackBb < 20 ? 'All-In' : 'Erh�hen';
       newReason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
     } else if (score > 0.5) {
       newRec = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
@@ -377,32 +1000,32 @@ class _RecommenderPageState extends State<RecommenderPage> {
       newRec = toCall < pot * 0.15 ? 'CALL' : 'CHECK';
       newReason = '🤖 Optional | $posHint';
     } else {
-      newRec = 'CHECK';
+      newRec = 'Checken';
       newReason = '🤖 Schwach | $posHint';
     }
 
-    // Pot Odds Info an Reason anhängen (wenn kein Override, aber Info vorhanden)
+    // Board texture label in reason for post-flop
+    if (street > 0 && communityCards.isNotEmpty) {
+      newReason = '${board.label} | $newReason';
+    }
+
     if (potOddsReason.isNotEmpty && potOddsOverride == null) {
       newReason = '$newReason | $potOddsReason';
     }
-
-    // Implied Odds Info anhängen
     if (impliedOddsReason.isNotEmpty) {
       newReason = '$newReason | $impliedOddsReason';
     }
 
-    // ── GTO Wahrscheinlichkeiten aus Score berechnen ──────────────────────
-    // score ∈ ~[0, 1]: niedriger = Fold, mittel = Call, hoch = Raise
+    // ── GTO Wahrscheinlichkeiten ──────────────────────────────────────────
     final double rawFold  = (1.0 - score).clamp(0.0, 1.0);
     final double rawRaise = score.clamp(0.0, 1.0);
-    // Call-Anteil: am größten in der Mitte (bell-shaped)
     final double rawCall  = (1.0 - (score - 0.5).abs() * 2).clamp(0.0, 1.0);
     final double total = rawFold + rawCall + rawRaise;
     final double nFold  = total > 0 ? rawFold  / total : 0.33;
     final double nCall  = total > 0 ? rawCall  / total : 0.34;
     final double nRaise = total > 0 ? rawRaise / total : 0.33;
 
-    // ── Bet-Sizing berechnen (GTO: 33/50/66/Pot) ─────────────────────────
+    // ── Bet-Sizing ────────────────────────────────────────────────────────
     String betDisplay = '';
     String betReason  = '';
     if (newRec == 'RAISE' || newRec == 'ALL-IN') {
@@ -415,7 +1038,6 @@ class _RecommenderPageState extends State<RecommenderPage> {
         fracLabel = 'All-In';
         sizingReason = 'Push/Fold Zone → All-In';
       } else if (street == 0) {
-        // Preflop Open-Raise
         final isPosition = position >= 2;
         fraction = isPosition ? pot * 2.5 : pot * 3.0;
         fracLabel = isPosition ? '2.5x' : '3x';
@@ -443,6 +1065,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
       betReason    = sizingReason;
     }
 
+    // Save last hand (Feature 6)
+    _lastPosition = position; _lastStreet = street; _lastHandRank = handRank;
+    _lastPot = pot; _lastToCall = toCall; _lastStackSize = stackSize;
+
     setState(() {
       recommendation = newRec;
       reason = newReason;
@@ -453,7 +1079,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
       _betReason  = betReason;
     });
 
-    // Hand History speichern
+    // Hand History
     final posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
     final posStr = position < posNames.length ? posNames[position] : 'MP';
     HandHistoryService.addRecord(HandRecord(
@@ -465,14 +1091,75 @@ class _RecommenderPageState extends State<RecommenderPage> {
       recommendation: newRec,
     ));
 
-    // TTS
     if (ttsEnabled && recommendation.isNotEmpty) {
       _speak(recommendation);
     }
   }
 
+  // Feature 6: Restore last hand
+  void _restoreLastHand() {
+    if (_lastPosition == null) return;
+    setState(() {
+      position = _lastPosition!; street = _lastStreet!; handRank = _lastHandRank!;
+      pot = _lastPot!; toCall = _lastToCall!; stackSize = _lastStackSize!;
+    });
+    _getRecommendation();
+  }
+
+  // Feature 7: Bet size buttons
+  Widget _buildBetSizeButtons() {
+    final sizes = [
+      ('1/3 Pot', pot / 3),
+      ('1/2 Pot', pot / 2),
+      ('2/3 Pot', pot * 2 / 3),
+      ('Pot', pot),
+      ('All-In', stackSize),
+    ];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('Zu zahlen:', style: TextStyle(color: Colors.white70, fontSize: 13)),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 6, runSpacing: 6,
+            children: sizes.asMap().entries.map((entry) {
+              final i = entry.key;
+              final label = entry.value.$1;
+              final val = entry.value.$2;
+              final selected = _selectedBetBtn == i;
+              return GestureDetector(
+                onTap: () => setState(() {
+                  _selectedBetBtn = i;
+                  toCall = val.clamp(0, stackSize);
+                }),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+                  decoration: BoxDecoration(
+                    color: selected ? AppConfig.primaryColor.withOpacity(0.3) : AppConfig.panelColor,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: selected ? AppConfig.primaryColor : Colors.grey.shade700),
+                  ),
+                  child: Text(
+                    '$label\n\$${val.toStringAsFixed(0)}',
+                    textAlign: TextAlign.center,
+                    style: TextStyle(
+                      color: selected ? AppConfig.primaryColor : Colors.white70,
+                      fontSize: 11,
+                      fontWeight: selected ? FontWeight.bold : FontWeight.normal,
+                    ),
+                  ),
+                ),
+              );
+            }).toList(),
+          ),
+        ],
+      ),
+    );
+  }
+
   void _speak(String text) {
-    // Placeholder für TTS - in echt: flutter_tts package
     HapticFeedback.mediumImpact();
   }
 
@@ -514,20 +1201,28 @@ class _RecommenderPageState extends State<RecommenderPage> {
           ),
         ],
       ),
+      floatingActionButton: _lastPosition != null
+          ? FloatingActionButton.small(
+              onPressed: _restoreLastHand,
+              backgroundColor: AppConfig.panelColor,
+              tooltip: 'Letzte Hand',
+              child: const Icon(Icons.replay, color: AppConfig.primaryColor),
+            )
+          : null,
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Empfehlung Haupt-Box
+            // ── Empfehlung Haupt-Box ─────────────────────────────────────
             if (recommendation.isNotEmpty) ...[
               Container(
                 padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
-                    colors: recommendation == 'ALL-IN' 
-                      ? [Colors.red, Colors.red.shade700]
-                      : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
+                    colors: recommendation == 'All-In'
+                        ? [Colors.red, Colors.red.shade700]
+                        : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
                     begin: Alignment.topLeft,
                     end: Alignment.bottomRight,
                   ),
@@ -543,23 +1238,27 @@ class _RecommenderPageState extends State<RecommenderPage> {
                 child: Column(
                   children: [
                     Text(AppConfig.t('recommendation').toUpperCase(),
-                      style: const TextStyle(fontSize: 14, color: Colors.black54)),
+                        style: const TextStyle(fontSize: 14, color: Colors.black54)),
                     Text(recommendation,
-                      style: const TextStyle(fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
+                        style: const TextStyle(
+                            fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
                     Row(
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         if (isBluff) const Text('🎭 ', style: TextStyle(fontSize: 20)),
-                        Flexible(child: Text(reason,
-                          style: const TextStyle(fontSize: 13, color: Colors.black87),
-                          textAlign: TextAlign.center)),
+                        Flexible(
+                          child: Text(reason,
+                              style: const TextStyle(fontSize: 13, color: Colors.black87),
+                              textAlign: TextAlign.center),
+                        ),
                       ],
                     ),
                   ],
                 ),
               ),
               const SizedBox(height: 10),
-              // ── Action-Wahrscheinlichkeiten (farbige Balken) ──────────────
+
+              // ── Action Probabilities ──────────────────────────────────
               Container(
                 padding: const EdgeInsets.all(16),
                 decoration: BoxDecoration(
@@ -573,13 +1272,14 @@ class _RecommenderPageState extends State<RecommenderPage> {
                     const Text('WAHRSCHEINLICHKEITEN',
                         style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
                     const SizedBox(height: 10),
-                    _buildActionBar('FOLD',        _foldPct,  Colors.red.shade600),
+                    _buildActionBar('FOLD',         _foldPct,  Colors.red.shade600),
                     _buildActionBar('CHECK / CALL', _callPct,  Colors.green.shade600),
                     _buildActionBar('RAISE',        _raisePct, Colors.blue.shade500),
                   ],
                 ),
               ),
-              // ── Empfohlener Bet-Betrag ────────────────────────────────────
+
+              // ── Bet-Sizing ────────────────────────────────────────────
               if (_betDisplay.isNotEmpty) ...[
                 const SizedBox(height: 8),
                 Container(
@@ -606,18 +1306,28 @@ class _RecommenderPageState extends State<RecommenderPage> {
                       ],
                     ),
                     const SizedBox(height: 4),
-                    Text(
-                      _betReason,
-                      style: const TextStyle(fontSize: 11, color: Colors.white70),
-                      textAlign: TextAlign.center,
-                    ),
+                    Text(_betReason,
+                        style: const TextStyle(fontSize: 11, color: Colors.white70),
+                        textAlign: TextAlign.center),
                   ]),
                 ),
               ],
+
+              // ── Board Texture Info (post-flop only) ───────────────────
+              if (street > 0 && communityCards.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _buildBoardTextureCard(),
+              ],
+
+              // ── Draw Detections ───────────────────────────────────────
+              if (_draws.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                _buildDrawsCard(),
+              ],
             ],
-            
+
             const SizedBox(height: 16),
-            
+
             // Quick Actions
             if (recommendation.isNotEmpty)
               Row(
@@ -628,26 +1338,51 @@ class _RecommenderPageState extends State<RecommenderPage> {
                   _buildQuickAction('RAISE', AppConfig.primaryColor),
                 ],
               ),
-            
+
             const SizedBox(height: 16),
-            
-            // Sliders & Dropdowns
-            // Stack & Position Info Badge
+
+            // Stack & Position Badge
             _buildStackPositionBadge(),
             const SizedBox(height: 8),
+
             _buildDropdown('Position', position, positions, (v) => setState(() => position = v)),
-            _buildDropdown('Street', street, streets, (v) => setState(() => street = v)),
+            _buildDropdown('Street', street, streets, (v) {
+              setState(() {
+                street = v;
+                // Clear community cards if switching to preflop
+                if (v == 0) communityCards = [];
+              });
+            }),
             _buildDropdown('Hand', handRank, handNames, (v) => setState(() => handRank = v)),
             _buildSlider('Pot', pot, 500, (v) => setState(() => pot = v)),
-            _buildSlider('Zu zahlen', toCall, 200, (v) => setState(() => toCall = v)),
+            // Bet Size Buttons (Feature 7)
+            _buildBetSizeButtons(),
             _buildSlider('Stack', stackSize, 500, (v) => setState(() => stackSize = v)),
-            
+
             const SizedBox(height: 12),
-            
-            // Board Info
-            if (street > 0)
+
+            // ── Community Cards Input ─────────────────────────────────────
+            if (street > 0) ...[
+              CommunityCardsWidget(
+                cards: communityCards,
+                street: street,
+                onChanged: (cards) => setState(() => communityCards = cards),
+              ),
+              const SizedBox(height: 8),
+            ],
+
+            // ── Hole Cards Input (optional) ───────────────────────────────
+            HoleCardsWidget(
+              cards: holeCards,
+              onChanged: (cards) => setState(() => holeCards = cards),
+            ),
+
+            const SizedBox(height: 12),
+
+            // Board Info (old chip row) — show only if no community cards entered
+            if (street > 0 && communityCards.isEmpty)
               _buildBoardInfo(),
-            
+
             const SizedBox(height: 12),
 
             // Opponent Modeling
@@ -666,8 +1401,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
             ),
 
             const SizedBox(height: 20),
-            
-            // Button
+
+            // CTA Button
             ElevatedButton(
               onPressed: _getRecommendation,
               style: ElevatedButton.styleFrom(
@@ -677,11 +1412,11 @@ class _RecommenderPageState extends State<RecommenderPage> {
                 shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
               ),
               child: Text('🎯 ${AppConfig.t('recommendation').toUpperCase()}',
-                style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
             ),
-            
+
             const SizedBox(height: 12),
-            
+
             // ML Info
             Container(
               padding: const EdgeInsets.all(12),
@@ -695,7 +1430,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
                   const Icon(Icons.psychology, color: AppConfig.primaryColor, size: 20),
                   const SizedBox(width: 8),
                   const Text('ML: ', style: TextStyle(color: Colors.grey)),
-                  Text('86.9%', style: const TextStyle(color: AppConfig.primaryColor, fontWeight: FontWeight.bold)),
+                  const Text('86.9%',
+                      style: TextStyle(
+                          color: AppConfig.primaryColor,
+                          fontWeight: FontWeight.bold)),
                   const Text(' | 100k Hände', style: TextStyle(color: Colors.grey, fontSize: 12)),
                 ],
               ),
@@ -706,6 +1444,122 @@ class _RecommenderPageState extends State<RecommenderPage> {
     );
   }
 
+  // ── Board Texture Card ────────────────────────────────────────────────────
+  Widget _buildBoardTextureCard() {
+    final Color textureColor;
+    switch (_boardAnalysis.texture) {
+      case 'wet':
+        textureColor = Colors.blue.shade400;
+        break;
+      case 'paired':
+        textureColor = Colors.orange.shade400;
+        break;
+      default:
+        textureColor = Colors.amber.shade600;
+    }
+
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: textureColor.withOpacity(0.1),
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: textureColor.withOpacity(0.5)),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
+            children: [
+              const Text('BOARD TEXTURE',
+                  style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+              const Spacer(),
+              Text(
+                'Danger ${_boardAnalysis.dangerScore}/10',
+                style: TextStyle(color: textureColor, fontSize: 12),
+              ),
+            ],
+          ),
+          const SizedBox(height: 6),
+          Text(
+            _boardAnalysis.label,
+            style: TextStyle(
+                color: textureColor,
+                fontSize: 16,
+                fontWeight: FontWeight.bold),
+          ),
+          const SizedBox(height: 6),
+          Wrap(
+            spacing: 8,
+            children: [
+              if (_boardAnalysis.flushDraw)
+                _boardTag('Flush Draw ♦', Colors.blue.shade300),
+              if (_boardAnalysis.straightDraw)
+                _boardTag('Straight Draw 📏', Colors.green.shade300),
+              if (_boardAnalysis.paired)
+                _boardTag('Paired Board 🔄', Colors.orange.shade300),
+              if (!_boardAnalysis.flushDraw &&
+                  !_boardAnalysis.straightDraw &&
+                  !_boardAnalysis.paired)
+                _boardTag('No Draws', Colors.grey),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _boardTag(String text, Color color) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+      decoration: BoxDecoration(
+        color: color.withOpacity(0.15),
+        borderRadius: BorderRadius.circular(6),
+        border: Border.all(color: color.withOpacity(0.4)),
+      ),
+      child: Text(text, style: TextStyle(color: color, fontSize: 11)),
+    );
+  }
+
+  // ── Draw Detections Card ──────────────────────────────────────────────────
+  Widget _buildDrawsCard() {
+    return Container(
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppConfig.panelColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.purple.shade800),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Text('HAND vs BOARD',
+              style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+          const SizedBox(height: 8),
+          ..._draws.map((d) {
+            final color = d.isMade ? Colors.green.shade400 : Colors.amber.shade400;
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 4),
+              child: Row(
+                children: [
+                  Icon(
+                    d.isMade ? Icons.check_circle : Icons.arrow_circle_right,
+                    color: color,
+                    size: 16,
+                  ),
+                  const SizedBox(width: 8),
+                  Flexible(
+                    child: Text(d.label, style: TextStyle(color: color, fontSize: 13)),
+                  ),
+                ],
+              ),
+            );
+          }),
+        ],
+      ),
+    );
+  }
+
+  // ── Action Bar ────────────────────────────────────────────────────────────
   Widget _buildActionBar(String label, double value, Color color) {
     final pct = (value * 100).toStringAsFixed(0);
     return Padding(
@@ -715,11 +1569,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
           mainAxisAlignment: MainAxisAlignment.spaceBetween,
           children: [
             Text(label,
-                style: TextStyle(
-                    color: color, fontSize: 12, fontWeight: FontWeight.bold)),
+                style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
             Text('$pct%',
-                style: TextStyle(
-                    color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+                style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.bold)),
           ],
         ),
         const SizedBox(height: 4),
@@ -753,7 +1605,6 @@ class _RecommenderPageState extends State<RecommenderPage> {
     final posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
     final posStr = position < posNames.length ? posNames[position] : 'MP';
 
-    // Stack Type
     final Color stackColor;
     final String stackLabel;
     final String stackHint;
@@ -771,7 +1622,6 @@ class _RecommenderPageState extends State<RecommenderPage> {
       stackHint = 'Deep Stack → Implied Odds';
     }
 
-    // Position Hint
     final String posHint;
     switch (posStr) {
       case 'BTN': posHint = 'Weiteste Range, steal'; break;
@@ -797,7 +1647,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
             const Text('POSITION', style: TextStyle(color: Colors.grey, fontSize: 10)),
             const SizedBox(height: 2),
             Text('🎯 $posStr',
-                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+                style: const TextStyle(
+                    color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
             Text(posHint, style: const TextStyle(color: Colors.grey, fontSize: 10)),
           ]),
           Container(width: 1, height: 40, color: Colors.grey.shade800),
@@ -805,7 +1656,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
             const Text('STACK', style: TextStyle(color: Colors.grey, fontSize: 10)),
             const SizedBox(height: 2),
             Text(stackLabel,
-                style: TextStyle(color: stackColor, fontSize: 14, fontWeight: FontWeight.bold)),
+                style: TextStyle(
+                    color: stackColor, fontSize: 14, fontWeight: FontWeight.bold)),
             Text(stackHint, style: const TextStyle(color: Colors.grey, fontSize: 10)),
           ]),
         ],
@@ -813,12 +1665,15 @@ class _RecommenderPageState extends State<RecommenderPage> {
     );
   }
 
-  Widget _buildDropdown(String label, int value, List<String> items, Function(int) onChanged) {
+  Widget _buildDropdown(
+      String label, int value, List<String> items, Function(int) onChanged) {
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Row(
         children: [
-          SizedBox(width: 90, child: Text('$label:', style: const TextStyle(color: Colors.white70))),
+          SizedBox(
+              width: 90,
+              child: Text('$label:', style: const TextStyle(color: Colors.white70))),
           Expanded(
             child: Container(
               padding: const EdgeInsets.symmetric(horizontal: 12),
@@ -831,8 +1686,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
                 isExpanded: true,
                 underline: const SizedBox(),
                 dropdownColor: AppConfig.panelColor,
-                items: List.generate(items.length, (i) =>
-                  DropdownMenuItem(value: i, child: Text(items[i]))),
+                items: List.generate(items.length,
+                    (i) => DropdownMenuItem(value: i, child: Text(items[i]))),
                 onChanged: (v) => onChanged(v!),
               ),
             ),
@@ -842,12 +1697,13 @@ class _RecommenderPageState extends State<RecommenderPage> {
     );
   }
 
-  Widget _buildSlider(String label, double value, double max, Function(double) onChanged) {
+  Widget _buildSlider(
+      String label, double value, double max, Function(double) onChanged) {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
         Text('$label: \$${value.toStringAsFixed(0)}',
-          style: const TextStyle(color: Colors.white70, fontSize: 13)),
+            style: const TextStyle(color: Colors.white70, fontSize: 13)),
         SliderTheme(
           data: SliderTheme.of(context).copyWith(
             activeTrackColor: AppConfig.primaryColor,
@@ -861,8 +1717,12 @@ class _RecommenderPageState extends State<RecommenderPage> {
   }
 
   Widget _buildBoardInfo() {
-    Color dangerColor = boardDanger > 6 ? Colors.red : (boardDanger > 3 ? Colors.orange : AppConfig.primaryColor);
-    
+    // Fallback board info when no community cards entered
+    final texture = street > 0 ? ['', 'Dry', 'Wet', 'Paired'][street % 4 == 0 ? 3 : street] : '—';
+    final danger = street * 2 + 3;
+    Color dangerColor =
+        danger > 6 ? Colors.red : (danger > 3 ? Colors.orange : AppConfig.primaryColor);
+
     return Container(
       padding: const EdgeInsets.all(12),
       decoration: BoxDecoration(
@@ -872,9 +1732,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
-          _buildInfoChip('Board', boardTexture.toUpperCase(), AppConfig.primaryColor),
-          _buildInfoChip('Danger', '$boardDanger/10', dangerColor),
-          _buildInfoChip('Bluff', isBluff ? 'YES 🎭' : 'No', isBluff ? Colors.purple : Colors.grey),
+          _buildInfoChip('Board', texture.toUpperCase(), AppConfig.primaryColor),
+          _buildInfoChip('Danger', '$danger/10', dangerColor),
+          _buildInfoChip('Bluff', isBluff ? 'YES 🎭' : 'No',
+              isBluff ? Colors.purple : Colors.grey),
         ],
       ),
     );
@@ -903,8 +1764,7 @@ class _CameraPageState extends State<CameraPage> {
   bool cameraActive = false;
   String detectedCards = 'Keine';
   String tableCards = '';
-  
-  // Simulierte Kartenerkennung
+
   final List<String> demoCards = ['A♠', 'K♥', 'Q♣', 'J♦', '10♠', '7♥', '2♣'];
   final List<String> demoTable = ['K♠', 'Q♥', '7♦'];
 
@@ -922,7 +1782,6 @@ class _CameraPageState extends State<CameraPage> {
       ),
       body: Column(
         children: [
-          // Kamera Vorschau (Placeholder)
           Expanded(
             flex: 2,
             child: Container(
@@ -937,52 +1796,56 @@ class _CameraPageState extends State<CameraPage> {
               ),
               child: Center(
                 child: cameraActive
-                  ? Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.camera_alt, size: 64, color: AppConfig.primaryColor),
-                        const SizedBox(height: 16),
-                        const Text('Kamera aktiv',
-                          style: TextStyle(color: AppConfig.primaryColor)),
-                        const SizedBox(height: 8),
-                        const Text('Karten werden erkannt...',
-                          style: TextStyle(color: Colors.grey, fontSize: 12)),
-                        const SizedBox(height: 16),
-                        // Demo Erkennung
-                        Container(
-                          padding: const EdgeInsets.all(8),
-                          decoration: BoxDecoration(
-                            color: AppConfig.panelColor,
-                            borderRadius: BorderRadius.circular(8),
+                    ? Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.camera_alt,
+                              size: 64, color: AppConfig.primaryColor),
+                          const SizedBox(height: 16),
+                          const Text('Kamera aktiv',
+                              style: TextStyle(color: AppConfig.primaryColor)),
+                          const SizedBox(height: 8),
+                          const Text('Karten werden erkannt...',
+                              style:
+                                  TextStyle(color: Colors.grey, fontSize: 12)),
+                          const SizedBox(height: 16),
+                          Container(
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: AppConfig.panelColor,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Row(
+                              mainAxisSize: MainAxisSize.min,
+                              children: demoCards
+                                  .take(2)
+                                  .map((c) => Padding(
+                                        padding: const EdgeInsets.symmetric(
+                                            horizontal: 4),
+                                        child: Text(c,
+                                            style: const TextStyle(fontSize: 24)),
+                                      ))
+                                  .toList(),
+                            ),
                           ),
-                          child: Row(
-                            mainAxisSize: MainAxisSize.min,
-                            children: demoCards.take(2).map((c) => 
-                              Padding(
-                                padding: const EdgeInsets.symmetric(horizontal: 4),
-                                child: Text(c, style: const TextStyle(fontSize: 24)),
-                              ),
-                            ).toList(),
-                          ),
-                        ),
-                      ],
-                    )
-                  : const Column(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        Icon(Icons.camera_alt_outlined, size: 64, color: Colors.grey),
-                        SizedBox(height: 16),
-                        Text('Kamera aus',
-                          style: TextStyle(color: Colors.grey)),
-                        Text('Tippe auf Play zum Starten',
-                          style: TextStyle(color: Colors.grey, fontSize: 12)),
-                      ],
-                    ),
+                        ],
+                      )
+                    : const Column(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          Icon(Icons.camera_alt_outlined,
+                              size: 64, color: Colors.grey),
+                          SizedBox(height: 16),
+                          Text('Kamera aus',
+                              style: TextStyle(color: Colors.grey)),
+                          Text('Tippe auf Play zum Starten',
+                              style:
+                                  TextStyle(color: Colors.grey, fontSize: 12)),
+                        ],
+                      ),
               ),
             ),
           ),
-          
-          // Erkannte Karten
           Container(
             margin: const EdgeInsets.all(16),
             padding: const EdgeInsets.all(16),
@@ -993,47 +1856,53 @@ class _CameraPageState extends State<CameraPage> {
             child: Column(
               children: [
                 const Text('DEINE HAND',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
                 const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: demoCards.take(2).map((c) => 
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                      padding: const EdgeInsets.all(12),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(8),
-                      ),
-                      child: Text(c, style: const TextStyle(
-                        fontSize: 24, fontWeight: FontWeight.bold, color: Colors.black,
-                      )),
-                    ),
-                  ).toList(),
+                  children: demoCards
+                      .take(2)
+                      .map((c) => Container(
+                            margin:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            padding: const EdgeInsets.all(12),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(8),
+                            ),
+                            child: Text(c,
+                                style: const TextStyle(
+                                  fontSize: 24,
+                                  fontWeight: FontWeight.bold,
+                                  color: Colors.black,
+                                )),
+                          ))
+                      .toList(),
                 ),
                 const SizedBox(height: 16),
                 const Text('TISCH',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
                 const SizedBox(height: 8),
                 Row(
                   mainAxisAlignment: MainAxisAlignment.center,
-                  children: demoTable.map((c) => 
-                    Container(
-                      margin: const EdgeInsets.symmetric(horizontal: 4),
-                      padding: const EdgeInsets.all(8),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(6),
-                      ),
-                      child: Text(c, style: const TextStyle(fontSize: 18, color: Colors.black)),
-                    ),
-                  ).toList(),
+                  children: demoTable
+                      .map((c) => Container(
+                            margin:
+                                const EdgeInsets.symmetric(horizontal: 4),
+                            padding: const EdgeInsets.all(8),
+                            decoration: BoxDecoration(
+                              color: Colors.white,
+                              borderRadius: BorderRadius.circular(6),
+                            ),
+                            child: Text(c,
+                                style: const TextStyle(
+                                    fontSize: 18, color: Colors.black)),
+                          ))
+                      .toList(),
                 ),
               ],
             ),
           ),
-          
-          // Empfehlung
           Container(
             margin: const EdgeInsets.fromLTRB(16, 0, 16, 16),
             padding: const EdgeInsets.all(16),
@@ -1047,8 +1916,10 @@ class _CameraPageState extends State<CameraPage> {
               children: [
                 const Text('🤖 Empfehlung: ', style: TextStyle(fontSize: 16)),
                 Text('RAISE 3x',
-                  style: TextStyle(fontSize: 20, fontWeight: FontWeight.bold,
-                    color: AppConfig.primaryColor)),
+                    style: TextStyle(
+                        fontSize: 20,
+                        fontWeight: FontWeight.bold,
+                        color: AppConfig.primaryColor)),
               ],
             ),
           ),
@@ -1072,7 +1943,6 @@ class TournamentPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // ICM Status
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -1083,35 +1953,31 @@ class TournamentPage extends StatelessWidget {
               ),
               borderRadius: BorderRadius.circular(16),
             ),
-            child: Column(
+            child: const Column(
               children: [
-                const Text('ICM STATUS',
-                  style: TextStyle(color: Colors.white70, fontSize: 12)),
-                const SizedBox(height: 8),
-                const Text('Normal',
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: Colors.white)),
-                const SizedBox(height: 4),
-                const Text('Kein Bubble',
-                  style: TextStyle(color: Colors.white70)),
+                Text('ICM STATUS',
+                    style: TextStyle(color: Colors.white70, fontSize: 12)),
+                SizedBox(height: 8),
+                Text('Normal',
+                    style: TextStyle(
+                        fontSize: 24,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.white)),
+                SizedBox(height: 4),
+                Text('Kein Bubble',
+                    style: TextStyle(color: Colors.white70)),
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Szenarien
           const Text('TURNIER SZENARIEN',
-            style: TextStyle(color: Colors.grey, fontSize: 12)),
+              style: TextStyle(color: Colors.grey, fontSize: 12)),
           const SizedBox(height: 8),
-          
           _buildScenario(50, 'Push/Fold', '10-15 BB', Colors.red),
           _buildScenario(100, 'Open Raise', '15-20 BB', Colors.orange),
           _buildScenario(200, 'Standard', '20+ BB', AppConfig.primaryColor),
           _buildScenario(500, 'Deep Stack', '50+ BB', Colors.blue),
-          
           const SizedBox(height: 16),
-          
-          // Bubble Info
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1124,7 +1990,8 @@ class TournamentPage extends StatelessWidget {
                   children: [
                     Icon(Icons.warning, color: Colors.orange),
                     SizedBox(width: 8),
-                    Text('Bubble Tipps', style: TextStyle(fontWeight: FontWeight.bold)),
+                    Text('Bubble Tipps',
+                        style: TextStyle(fontWeight: FontWeight.bold)),
                   ],
                 ),
                 const SizedBox(height: 12),
@@ -1135,10 +2002,7 @@ class TournamentPage extends StatelessWidget {
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Payout Structure
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1149,7 +2013,7 @@ class TournamentPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('PAYOUT STRUKTUR',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
                 const SizedBox(height: 8),
                 _buildPayout('1.', '50%', Colors.amber),
                 _buildPayout('2.', '25%', Colors.grey.shade400),
@@ -1163,7 +2027,8 @@ class TournamentPage extends StatelessWidget {
     );
   }
 
-  Widget _buildScenario(int bbs, String action, String range, Color color) {
+  static Widget _buildScenario(
+      int bbs, String action, String range, Color color) {
     return Container(
       margin: const EdgeInsets.only(bottom: 8),
       padding: const EdgeInsets.all(12),
@@ -1175,17 +2040,25 @@ class TournamentPage extends StatelessWidget {
       child: Row(
         children: [
           Container(
-            padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-            decoration: BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
-            child: Text('$bbs BB', style: const TextStyle(fontWeight: FontWeight.bold, color: Colors.white)),
+            padding:
+                const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+            decoration:
+                BoxDecoration(color: color, borderRadius: BorderRadius.circular(4)),
+            child: Text('$bbs BB',
+                style: const TextStyle(
+                    fontWeight: FontWeight.bold, color: Colors.white)),
           ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Text(action, style: TextStyle(fontWeight: FontWeight.bold, color: color)),
-                Text(range, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+                Text(action,
+                    style: TextStyle(
+                        fontWeight: FontWeight.bold, color: color)),
+                Text(range,
+                    style:
+                        const TextStyle(color: Colors.grey, fontSize: 12)),
               ],
             ),
           ),
@@ -1195,7 +2068,7 @@ class TournamentPage extends StatelessWidget {
     );
   }
 
-  Widget _buildTip(String emoji, String text) {
+  static Widget _buildTip(String emoji, String text) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
@@ -1208,12 +2081,16 @@ class TournamentPage extends StatelessWidget {
     );
   }
 
-  Widget _buildPayout(String place, String percent, Color color) {
+  static Widget _buildPayout(String place, String percent, Color color) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          SizedBox(width: 30, child: Text(place, style: TextStyle(color: color, fontWeight: FontWeight.bold))),
+          SizedBox(
+              width: 30,
+              child: Text(place,
+                  style: TextStyle(
+                      color: color, fontWeight: FontWeight.bold))),
           Text(percent, style: TextStyle(color: color)),
         ],
       ),
@@ -1235,44 +2112,45 @@ class StatsPage extends StatelessWidget {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // Gesamt Stats
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
               gradient: LinearGradient(
-                colors: [AppConfig.primaryColor.withOpacity(0.8), AppConfig.primaryColor.withOpacity(0.4)],
+                colors: [
+                  AppConfig.primaryColor.withOpacity(0.8),
+                  AppConfig.primaryColor.withOpacity(0.4)
+                ],
                 begin: Alignment.topLeft,
                 end: Alignment.bottomRight,
               ),
               borderRadius: BorderRadius.circular(16),
             ),
-            child: Column(
+            child: const Column(
               children: [
-                const Text('GESAMT PERFORMANCE',
-                  style: TextStyle(color: Colors.black54, fontSize: 12)),
-                const SizedBox(height: 8),
-                const Text('0',
-                  style: TextStyle(fontSize: 48, fontWeight: FontWeight.bold, color: Colors.black)),
-                const Text('Hände gespielt',
-                  style: TextStyle(color: Colors.black87)),
+                Text('GESAMT PERFORMANCE',
+                    style: TextStyle(color: Colors.black54, fontSize: 12)),
+                SizedBox(height: 8),
+                Text('0',
+                    style: TextStyle(
+                        fontSize: 48,
+                        fontWeight: FontWeight.bold,
+                        color: Colors.black)),
+                Text('Hände gespielt',
+                    style: TextStyle(color: Colors.black87)),
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Quick Stats
           Row(
             children: [
-              Expanded(child: _buildStatCard('Win-Rate', '0%', Colors.grey)),
+              Expanded(
+                  child: _buildStatCard('Win-Rate', '0%', Colors.grey)),
               const SizedBox(width: 8),
-              Expanded(child: _buildStatCard('Avg Profit', '\$0', Colors.grey)),
+              Expanded(
+                  child: _buildStatCard('Avg Profit', '\$0', Colors.grey)),
             ],
           ),
-          
           const SizedBox(height: 16),
-          
-          // Gegner Tracking
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1282,34 +2160,32 @@ class StatsPage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                const Row(
                   children: [
-                    const Icon(Icons.people, color: AppConfig.primaryColor),
-                    const SizedBox(width: 8),
-                    const Text('GEGNER TRACKING',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    Icon(Icons.people, color: AppConfig.primaryColor),
+                    SizedBox(width: 8),
+                    Text('GEGNER TRACKING',
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
                   ],
                 ),
                 const SizedBox(height: 12),
                 const Text('Keine Gegner getrackt',
-                  style: TextStyle(color: Colors.grey)),
+                    style: TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
                 ElevatedButton.icon(
                   onPressed: () {},
                   icon: const Icon(Icons.add, size: 16),
                   label: const Text('Gegner hinzufügen'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppConfig.primaryColor.withOpacity(0.2),
+                    backgroundColor:
+                        AppConfig.primaryColor.withOpacity(0.2),
                     foregroundColor: AppConfig.primaryColor,
                   ),
                 ),
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Hand History
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1319,34 +2195,32 @@ class StatsPage extends StatelessWidget {
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
-                Row(
+                const Row(
                   children: [
-                    const Icon(Icons.history, color: AppConfig.primaryColor),
-                    const SizedBox(width: 8),
-                    const Text('HAND HISTORY',
-                      style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    Icon(Icons.history, color: AppConfig.primaryColor),
+                    SizedBox(width: 8),
+                    Text('HAND HISTORY',
+                        style: TextStyle(color: Colors.grey, fontSize: 12)),
                   ],
                 ),
                 const SizedBox(height: 12),
                 const Text('Importiere deine Hände',
-                  style: TextStyle(color: Colors.grey)),
+                    style: TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
                 ElevatedButton.icon(
                   onPressed: () {},
                   icon: const Icon(Icons.upload_file, size: 16),
                   label: const Text('Importieren'),
                   style: ElevatedButton.styleFrom(
-                    backgroundColor: AppConfig.primaryColor.withOpacity(0.2),
+                    backgroundColor:
+                        AppConfig.primaryColor.withOpacity(0.2),
                     foregroundColor: AppConfig.primaryColor,
                   ),
                 ),
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Beste Hände
           Container(
             padding: const EdgeInsets.all(16),
             decoration: BoxDecoration(
@@ -1357,7 +2231,7 @@ class StatsPage extends StatelessWidget {
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 const Text('BESTE AKTIONEN',
-                  style: TextStyle(color: Colors.grey, fontSize: 12)),
+                    style: TextStyle(color: Colors.grey, fontSize: 12)),
                 const SizedBox(height: 12),
                 _buildActionStat('Raise', 0, 0),
                 _buildActionStat('Call', 0, 0),
@@ -1370,7 +2244,7 @@ class StatsPage extends StatelessWidget {
     );
   }
 
-  Widget _buildStatCard(String label, String value, Color color) {
+  static Widget _buildStatCard(String label, String value, Color color) {
     return Container(
       padding: const EdgeInsets.all(16),
       decoration: BoxDecoration(
@@ -1379,24 +2253,34 @@ class StatsPage extends StatelessWidget {
       ),
       child: Column(
         children: [
-          Text(value, style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold, color: color)),
-          Text(label, style: const TextStyle(color: Colors.grey, fontSize: 12)),
+          Text(value,
+              style: TextStyle(
+                  fontSize: 24,
+                  fontWeight: FontWeight.bold,
+                  color: color)),
+          Text(label,
+              style: const TextStyle(color: Colors.grey, fontSize: 12)),
         ],
       ),
     );
   }
 
-  Widget _buildActionStat(String action, int count, double winRate) {
+  static Widget _buildActionStat(
+      String action, int count, double winRate) {
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 4),
       child: Row(
         children: [
-          SizedBox(width: 60, child: Text(action, style: const TextStyle(color: Colors.white70))),
+          SizedBox(
+              width: 60,
+              child: Text(action,
+                  style: const TextStyle(color: Colors.white70))),
           Expanded(
             child: LinearProgressIndicator(
               value: winRate / 100,
               backgroundColor: Colors.grey.shade800,
-              valueColor: AlwaysStoppedAnimation(AppConfig.primaryColor),
+              valueColor:
+                  AlwaysStoppedAnimation(AppConfig.primaryColor),
             ),
           ),
           const SizedBox(width: 8),
@@ -1420,7 +2304,7 @@ class _SettingsPageState extends State<SettingsPage> {
   bool ttsEnabled = true;
   bool hapticEnabled = true;
   bool autoRecord = false;
-  
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -1430,7 +2314,6 @@ class _SettingsPageState extends State<SettingsPage> {
       body: ListView(
         padding: const EdgeInsets.all(16),
         children: [
-          // App Info
           Container(
             padding: const EdgeInsets.all(20),
             decoration: BoxDecoration(
@@ -1442,51 +2325,42 @@ class _SettingsPageState extends State<SettingsPage> {
                 const Text('🃏', style: TextStyle(fontSize: 48)),
                 const SizedBox(height: 8),
                 const Text(AppConfig.appName,
-                  style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold)),
+                    style: TextStyle(
+                        fontSize: 24, fontWeight: FontWeight.bold)),
                 Text('Version ${AppConfig.version}',
-                  style: const TextStyle(color: Colors.grey)),
+                    style: const TextStyle(color: Colors.grey)),
                 const SizedBox(height: 8),
                 const Text('ML Genauigkeit: 86.9%',
-                  style: TextStyle(color: AppConfig.primaryColor)),
+                    style: TextStyle(color: AppConfig.primaryColor)),
               ],
             ),
           ),
-          
           const SizedBox(height: 16),
-          
-          // Sprache
           _buildSection('SPRACHE', [
             _buildLangOption('DE', 'Deutsch', true),
             _buildLangOption('EN', 'English', false),
           ]),
-          
-          // Audio
           _buildSection('AUDIO & FEEDBACK', [
-            _buildSwitch('Sprachausgabe (TTS)', ttsEnabled, (v) => setState(() => ttsEnabled = v)),
-            _buildSwitch('Haptic Feedback', hapticEnabled, (v) => setState(() => hapticEnabled = v)),
+            _buildSwitch('Sprachausgabe (TTS)', ttsEnabled,
+                (v) => setState(() => ttsEnabled = v)),
+            _buildSwitch('Haptic Feedback', hapticEnabled,
+                (v) => setState(() => hapticEnabled = v)),
           ]),
-          
-          // Recording
           _buildSection('AUFNAHME', [
-            _buildSwitch('Auto-Record Hände', autoRecord, (v) => setState(() => autoRecord = v)),
+            _buildSwitch('Auto-Record Hände', autoRecord,
+                (v) => setState(() => autoRecord = v)),
           ]),
-          
-          // ML
           _buildSection('MACHINE LEARNING', [
             _buildInfo('Trainingsdaten', '100.000 Hände'),
             _buildInfo('Modell', 'Gradient Boosting'),
             _buildInfo('Genauigkeit', '86.9%'),
             _buildButton('Neu Trainieren', () {}),
           ]),
-          
-          // Data
           _buildSection('DATEN', [
             _buildButton('Exportieren', () {}),
             _buildButton('Importieren', () {}),
             _buildButton('Reset', () {}, isDestructive: true),
           ]),
-          
-          // About
           _buildSection('ÜBER', [
             _buildLink('Datenschutz', () {}),
             _buildLink('Nutzungsbedingungen', () {}),
@@ -1518,9 +2392,9 @@ class _SettingsPageState extends State<SettingsPage> {
   Widget _buildLangOption(String code, String name, bool selected) {
     return ListTile(
       title: Text(name),
-      trailing: selected 
-        ? const Icon(Icons.check, color: AppConfig.primaryColor)
-        : null,
+      trailing: selected
+          ? const Icon(Icons.check, color: AppConfig.primaryColor)
+          : null,
       onTap: () => setState(() => AppConfig.currentLang = code),
     );
   }
@@ -1536,17 +2410,19 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildInfo(String label, String value) {
     return ListTile(
-      title: Text(label, style: const TextStyle(color: Colors.white70)),
-      trailing: Text(value, style: const TextStyle(color: AppConfig.primaryColor)),
+      title: Text(label,
+          style: const TextStyle(color: Colors.white70)),
+      trailing: Text(value,
+          style: const TextStyle(color: AppConfig.primaryColor)),
     );
   }
 
-  Widget _buildButton(String label, VoidCallback onPressed, {bool isDestructive = false}) {
+  Widget _buildButton(String label, VoidCallback onPressed,
+      {bool isDestructive = false}) {
     return ListTile(
-      title: Text(
-        label,
-        style: TextStyle(color: isDestructive ? Colors.red : Colors.white),
-      ),
+      title: Text(label,
+          style:
+              TextStyle(color: isDestructive ? Colors.red : Colors.white)),
       trailing: const Icon(Icons.arrow_forward_ios, size: 16),
       onTap: onPressed,
     );
@@ -1554,7 +2430,8 @@ class _SettingsPageState extends State<SettingsPage> {
 
   Widget _buildLink(String label, VoidCallback onPressed) {
     return ListTile(
-      title: Text(label, style: const TextStyle(color: Colors.white70)),
+      title: Text(label,
+          style: const TextStyle(color: Colors.white70)),
       trailing: const Icon(Icons.open_in_new, size: 16),
       onTap: onPressed,
     );
