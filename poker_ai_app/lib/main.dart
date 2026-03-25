@@ -142,8 +142,8 @@ class CardClassifier {
         }
       }
 
-      // Mindest-Confidence 35%
-      if (maxVal < 0.35) return null;
+      // Mindest-Confidence 25%
+      if (maxVal < 0.25) return null;
       return kKaggleLabels[maxIdx];
     } catch (_) {
       return null;
@@ -917,7 +917,10 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
   List<Map<String, String>> _detected = [];
   String? _lastLabel;
   int _confirmCount = 0;
-  static const int kConfirmFrames = 6;
+  double _zoom = 1.0;
+  double _maxZoom = 1.0;
+  double _minZoom = 1.0;
+  static const int kConfirmFrames = 4;
 
   @override
   void initState() {
@@ -944,6 +947,9 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
     await _cam!.initialize();
+    _minZoom = await _cam!.getMinZoomLevel();
+    _maxZoom = await _cam!.getMaxZoomLevel();
+    _zoom = _minZoom;
     if (mounted) setState(() => _camReady = true);
   }
 
@@ -1129,7 +1135,37 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                 ),
               ]),
             ),
-          const SizedBox(height: 16),
+          // Zoom Slider
+          if (_camReady && _maxZoom > _minZoom)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Row(children: [
+                const Icon(Icons.zoom_out, color: Colors.grey, size: 18),
+                Expanded(
+                  child: SliderTheme(
+                    data: SliderTheme.of(context).copyWith(
+                      activeTrackColor: AC.P, thumbColor: AC.P,
+                      inactiveTrackColor: Colors.grey.shade800,
+                      trackHeight: 3,
+                    ),
+                    child: Slider(
+                      value: _zoom,
+                      min: _minZoom,
+                      max: _maxZoom,
+                      onChanged: (v) async {
+                        setState(() => _zoom = v);
+                        await _cam?.setZoomLevel(v);
+                      },
+                    ),
+                  ),
+                ),
+                const Icon(Icons.zoom_in, color: AC.P, size: 18),
+                const SizedBox(width: 4),
+                Text('${_zoom.toStringAsFixed(1)}x',
+                    style: const TextStyle(color: AC.P, fontSize: 12)),
+              ]),
+            ),
+          const SizedBox(height: 8),
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(children: [
