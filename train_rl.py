@@ -1,3 +1,4 @@
+import torch
 """
 Otto Poker RL Training Script
 ==============================
@@ -127,7 +128,7 @@ with Logger(LOG_DIR) as logger:
             # Bestes Modell speichern
             if avg_reward > best_reward:
                 best_reward = avg_reward
-                agent.save(SAVE_PATH)
+                torch.save(agent.q_estimator.qnet.state_dict(), os.path.join(SAVE_PATH, "model.pth"))
                 print(f"  💾 Neues bestes Modell gespeichert (Reward: {best_reward:+.4f})")
 
         # Nach Hälfte: Self-Play statt Random Gegner
@@ -142,7 +143,7 @@ with Logger(LOG_DIR) as logger:
                 replay_memory_size=100_000,
                 replay_memory_init_size=100,
             )
-            self_play_agent.load(SAVE_PATH)
+            self_play_agent.q_estimator.qnet.load_state_dict(torch.load(os.path.join(SAVE_PATH, "model.pth"), map_location="cpu"))
             env.set_agents([agent, self_play_agent])
 
 print(f"\n✅ Training abgeschlossen!")
