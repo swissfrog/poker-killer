@@ -4,6 +4,8 @@ import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
+import 'package:flutter_tts/flutter_tts.dart';
+import 'package:shared_preferences/shared_preferences.dart';
 import 'hand_evaluator.dart';
 import 'preflop_ranges.dart';
 import 'opponent_tracker.dart';
@@ -11,6 +13,10 @@ import 'draw_analyzer.dart';
 import 'bet_sizer.dart';
 import 'stack_awareness.dart';
 import 'position_awareness.dart';
+import 'hand_history.dart';
+import 'opponent_model.dart';
+import 'pot_odds.dart';
+import 'preflop_chart.dart';
 
 // ─── Farben ───────────────────────────────────────────────────────────────────
 class AC {
@@ -536,11 +542,20 @@ class _RPState extends State<RP> {
   final PokerBrain _brain = PokerBrain();
   bool _brainReady = false;
   bool _calcEquity = false;
+  final FlutterTts _tts = FlutterTts();
+  List<Map<String, String>> _manualBoard = [];
 
   @override
   void initState() {
     super.initState();
     _brain.load().then((_) => setState(() => _brainReady = true));
+    _tts.setLanguage('de-DE');
+    _tts.setSpeechRate(0.9);
+  }
+
+  Future<void> _speak(String text) async {
+    await _tts.stop();
+    await _tts.speak(text);
   }
 
   @override
@@ -549,21 +564,22 @@ class _RPState extends State<RP> {
     super.dispose();
   }
 
-  int get _street => widget.B.isEmpty ? 0 : widget.B.length == 3 ? 1 : widget.B.length == 4 ? 2 : 3;
+  List<Map<String, String>> get _board => widget.B.isNotEmpty ? widget.B : _manualBoard;
+  int get _street => _board.isEmpty ? 0 : _board.length == 3 ? 1 : _board.length == 4 ? 2 : 3;
 
   // Echte Monte-Carlo Equity aus Dart-Evaluator
   Future<double> _calcRealEquity() async {
     if (widget.M.isEmpty) return 0.5;
     return HandEvaluator.monteCarloEquity(
       widget.M.cast<Map<String, String>>(),
-      widget.B.cast<Map<String, String>>(),
+      _board.cast<Map<String, String>>(),
       simulations: 300,
     );
   }
 
   double _boardWetness() {
-    if (widget.B.isEmpty) return 0.3;
-    final suits = widget.B.map((c) => c['s'] ?? '').toList();
+    if (_board.isEmpty) return 0.3;
+    final suits = _board.map((c) => c['s'] ?? '').toList();
     final suitCounts = <String, int>{};
     for (var s in suits) suitCounts[s] = (suitCounts[s] ?? 0) + 1;
     final maxSuit = suitCounts.values.fold(0, (a, b) => a > b ? a : b);
@@ -640,7 +656,7 @@ class _RPState extends State<RP> {
     // Bet-Sizing berechnen
     final draws = DrawAnalyzer.findDraws(
       widget.M.cast<Map<String, String>>(),
-      widget.B.cast<Map<String, String>>(),
+      _board.cast<Map<String, String>>(),
     );
     final hasFlushDraw = draws.any((d) => d.name.toLowerCase().contains('flush'));
     final hasOESD = draws.any((d) => d.name.toLowerCase().contains('oesd') || d.name.toLowerCase().contains('open-ended'));
@@ -667,12 +683,130 @@ class _RPState extends State<RP> {
       _scores = result.scores;
       _betSizing = (action == 'RAISE' || action == 'ALL-IN') ? sizing : null;
     });
+
+    // TTS Ausgabe
+    final actionDe = {
+      'FOLD': 'Passen', 'CHECK': 'Checken', 'CALL': 'Mitgehen',
+      'RAISE': 'Erhöhen', 'ALL-IN': 'All In',
+    }[action] ?? action;
+    final eqStr = '${(_equity * 100).toStringAsFixed(0)} Prozent Equity';
+    _speak('$actionDe. $eqStr.');
+  }
+
+  // Kartenfarben & Werte für Card-Picker
+  static const _suits = ['♠', '♥', '♦', '♣'];
+  static const _ranks = ['A','K','Q','J','10','9','8','7','6','5','4','3','2'];
+
+  void _showCardPicker(int slot) {
+    showModalBottomSheet(
+      context: context,
+      backgroundColor: AC.PN,
+      builder: (_) => Padding(
+        padding: const EdgeInsets.all(16),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            const Text('Karte wählen', style: TextStyle(color: Colors.white, fontSize: 16, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 8),
+            for (final suit in _suits)
+              Wrap(
+                children: _ranks.map((rank) {
+                  final isRed = suit == '♥' || suit == '♦';
+                  return GestureDetector(
+                    onTap: () {
+                      Navigator.pop(context);
+                      setState(() {
+                        if (slot < _manualBoard.length) {
+                          _manualBoard[slot] = {'r': rank, 's': suit};
+                        } else {
+                          _manualBoard.add({'r': rank, 's': suit});
+                        }
+                      });
+                    },
+                    child: Container(
+                      margin: const EdgeInsets.all(2),
+                      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+                      decoration: BoxDecoration(
+                        color: AC.BG,
+                        borderRadius: BorderRadius.circular(6),
+                        border: Border.all(color: Colors.grey.shade700),
+                      ),
+                      child: Text('$rank$suit',
+                          style: TextStyle(color: isRed ? Colors.red : Colors.white, fontSize: 13)),
+                    ),
+                  );
+                }).toList(),
+              ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _manualBoardWidget() {
+    return Container(
+      margin: const EdgeInsets.only(bottom: 12),
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AC.PN,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade700),
+      ),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(children: [
+            const Text('FLOP / TURN / RIVER', style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+            const Spacer(),
+            if (_manualBoard.isNotEmpty)
+              GestureDetector(
+                onTap: () => setState(() => _manualBoard = []),
+                child: const Icon(Icons.clear, color: Colors.grey, size: 18),
+              ),
+          ]),
+          const SizedBox(height: 8),
+          Row(children: [
+            for (int i = 0; i < 5; i++)
+              GestureDetector(
+                onTap: () => _showCardPicker(i),
+                child: Container(
+                  margin: const EdgeInsets.only(right: 6),
+                  width: 52, height: 72,
+                  decoration: BoxDecoration(
+                    color: i < _manualBoard.length ? Colors.white : AC.BG,
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(
+                      color: i < _manualBoard.length ? AC.P : Colors.grey.shade600,
+                      width: i < _manualBoard.length ? 2 : 1,
+                    ),
+                  ),
+                  child: Center(
+                    child: i < _manualBoard.length
+                        ? Text(
+                            '${_manualBoard[i]['r']}${_manualBoard[i]['s']}',
+                            style: TextStyle(
+                              fontSize: 14, fontWeight: FontWeight.bold,
+                              color: (_manualBoard[i]['s'] == '♥' || _manualBoard[i]['s'] == '♦')
+                                  ? Colors.red : Colors.black,
+                            ),
+                          )
+                        : Text(
+                            ['F', 'F', 'F', 'T', 'R'][i],
+                            style: TextStyle(color: Colors.grey.shade500, fontSize: 12),
+                          ),
+                  ),
+                ),
+              ),
+          ]),
+        ],
+      ),
+    );
   }
 
   void _ev() {
     if (widget.M.isEmpty) { hr = 0; return; }
-    final ranks = [...widget.M.map((c) => c['r']), ...widget.B.map((c) => c['r'])];
-    final suits = [...widget.M.map((c) => c['s']), ...widget.B.map((c) => c['s'])];
+    final ranks = [...widget.M.map((c) => c['r']), ..._board.map((c) => c['r'])];
+    final suits = [...widget.M.map((c) => c['s']), ..._board.map((c) => c['s'])];
     Map<String?, int> rc = {}, sc = {};
     for (var x in ranks) rc[x] = (rc[x] ?? 0) + 1;
     for (var x in suits) sc[x] = (sc[x] ?? 0) + 1;
@@ -694,10 +828,10 @@ class _RPState extends State<RP> {
   @override
   Widget build(BuildContext context) {
     _ev();
-    String sn = widget.B.isEmpty
+    String sn = _board.isEmpty
         ? 'Preflop'
-        : widget.B.length == 3 ? 'Flop'
-        : widget.B.length == 4 ? 'Turn' : 'River';
+        : _board.length == 3 ? 'Flop'
+        : _board.length == 4 ? 'Turn' : 'River';
     return Scaffold(
       appBar: AppBar(
         title: const Row(mainAxisSize: MainAxisSize.min, children: [
@@ -709,7 +843,9 @@ class _RPState extends State<RP> {
         padding: const EdgeInsets.all(16),
         child: Column(crossAxisAlignment: CrossAxisAlignment.stretch, children: [
           _cardRow('🦦 MEINE 2 KARTEN', widget.M),
-          _cardRow('♠♣ TISCH: ${widget.B.length} Karten', widget.B),
+          _cardRow('♠♣ TISCH: ${_board.length} Karten', _board),
+          // Manuelle Community Cards Eingabe (wenn kein Scanner-Board)
+          if (widget.B.isEmpty) _manualBoardWidget(),
           if (hr > 0 || widget.M.isNotEmpty)
             Container(
               padding: const EdgeInsets.all(12),
@@ -833,7 +969,7 @@ class _RPState extends State<RP> {
           _slider('Big Blind', bb, 50, (x) => setState(() => bb = x < 1 ? 1 : x), unit: '\$'),
           const SizedBox(height: 20),
           // Draw-Anzeige
-          if (widget.M.isNotEmpty && widget.B.isNotEmpty) ...[
+          if (widget.M.isNotEmpty && _board.isNotEmpty) ...[
             _drawsWidget(),
             const SizedBox(height: 8),
           ],
@@ -1032,9 +1168,9 @@ class _RPState extends State<RP> {
   Widget _drawsWidget() {
     final draws = DrawAnalyzer.findDraws(
       widget.M.cast<Map<String, String>>(),
-      widget.B.cast<Map<String, String>>(),
+      _board.cast<Map<String, String>>(),
     );
-    final texture = DrawAnalyzer.analyzeBoard(widget.B.cast<Map<String, String>>());
+    final texture = DrawAnalyzer.analyzeBoard(_board.cast<Map<String, String>>());
     final totalOuts = DrawAnalyzer.totalOuts(draws);
 
     return Container(
