@@ -118,7 +118,7 @@ with Logger(LOG_DIR) as logger:
         # Regelmäßige Evaluierung
         if step % EVAL_EVERY == 0:
             rewards, _ = tournament(eval_env, EVAL_GAMES)
-            avg_reward = rewards[0]
+            avg_reward = rewards[0] if hasattr(rewards, '__len__') else float(rewards)
             rewards_history.append(avg_reward)
 
             print(f"  Step {step:>8,} | Reward: {avg_reward:+.4f} | Epsilon: {agent.epsilon:.3f}")
