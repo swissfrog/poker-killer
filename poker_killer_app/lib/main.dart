@@ -300,9 +300,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
       score -= 0.15;
     } else if (stackBb < 20) {
       score -= 0.10;
-    } else if (stackBb > 50) {
-      score += 0.08;
     }
+    // Deep Stack: Basis-Implied-Odds werden in Verbesserung 7 unten berechnet
 
     // Board Danger
     if (street > 0) {
@@ -316,6 +315,20 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
     // Position-spezifische Hinweise für reason
     final posHint = _positionHint(position, stackBb);
+
+    // ── VERBESSERUNG 7: Implied Odds bei Deep Stack ───────────────────────
+    // Wenn stackBb > 50 UND Preflop/Flop: Implied Odds Bonus addieren
+    String impliedOddsReason = '';
+    if (stackBb > 50 && (street == 0 || street == 1)) {
+      final impliedBonus = (stackBb / 100) * 0.08;
+      score += impliedBonus;
+      impliedOddsReason = 'Deep Stack Implied Odds +';
+      // Draw-Hände (handRank 3-5: Straight/Flush/Full House) extra Bonus
+      if (handRank >= 3 && handRank <= 5) {
+        score += 0.05;
+        impliedOddsReason = 'Deep Stack Implied Odds + (implied odds boost)';
+      }
+    }
 
     // ── VERBESSERUNG 5: Nash Push/Fold Check (höchste Priorität) ─────────
     final nashResult = _nashPushFoldCheck(stackBb, handRank);
@@ -371,6 +384,11 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // Pot Odds Info an Reason anhängen (wenn kein Override, aber Info vorhanden)
     if (potOddsReason.isNotEmpty && potOddsOverride == null) {
       newReason = '$newReason | $potOddsReason';
+    }
+
+    // Implied Odds Info anhängen
+    if (impliedOddsReason.isNotEmpty) {
+      newReason = '$newReason | $impliedOddsReason';
     }
 
     // ── GTO Wahrscheinlichkeiten aus Score berechnen ──────────────────────
