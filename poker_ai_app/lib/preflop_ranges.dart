@@ -1,9 +1,9 @@
 // preflop_ranges.dart
 // GTO-approximierte Preflop Opening- und 3bet-Ranges
 // Basiert auf solver-basierten Ranges für 6-max NLHE
+// v2: Position-Awareness integriert (PositionAwareness.openingRangeMultiplier)
 
-// Karten-Ranking (0=72o worst, 1=AA best) — vereinfacht
-// Rank basiert auf Sklansky-Chubukov + moderne GTO-Ranges
+import 'position_awareness.dart';
 
 class PreflopRanges {
   // Opening Ranges per Position (% der Hände die man öffnet)
@@ -92,23 +92,48 @@ class PreflopRanges {
     return strength >= valueThreshold || (suited && strength >= 0.55 && strength < 0.65);
   }
 
-  // Empfehlung als Text
+  // Empfehlung als Text (original, behält Kompatibilität)
   static String preflopAdvice(
+    String rank1, String suit1,
+    String rank2, String suit2,
+    int posIdx, double callAmount, double pot
+  ) {
+    return preflopAdviceWithPosition(rank1, suit1, rank2, suit2, posIdx, callAmount, pot);
+  }
+
+  // Erweiterte Empfehlung mit expliziter Position-Awareness
+  static String preflopAdviceWithPosition(
     String rank1, String suit1,
     String rank2, String suit2,
     int posIdx, double callAmount, double pot
   ) {
     final strength = handStrengthPreflop(rank1, suit1, rank2, suit2);
     final potOdds = (pot + callAmount) > 0 ? callAmount / (pot + callAmount) : 0.0;
+    final pokerPos = PositionAwareness.fromIndex(posIdx);
+
+    // Positions-Multiplikator: Late Position öffnet breiter
+    final multiplier = PositionAwareness.openingRangeMultiplier(pokerPos);
+    final adjustedStrength = strength * multiplier;
 
     if (callAmount == 0) {
       // Facing no bet / we open
-      if (shouldOpen(rank1, suit1, rank2, suit2, posIdx)) return 'RAISE';
+      final positions = ['BB', 'SB', 'UTG', 'MP', 'CO', 'BTN'];
+      final posName = posIdx < positions.length ? positions[posIdx] : 'CO';
+      final baseThreshold = 1.0 - (openingFreq[posName] ?? 0.25);
+      // Late Position: niedrigerer Threshold (weiter öffnen)
+      final adjustedThreshold = baseThreshold / multiplier;
+      if (strength >= adjustedThreshold) return 'RAISE';
+
+      // Steal aus SB/BTN wenn stark genug
+      if (PositionAwareness.shouldSteal(pokerPos, strength)) return 'RAISE';
+
       return 'FOLD';
     } else {
       // Facing a raise
       if (should3bet(rank1, suit1, rank2, suit2, posIdx)) return 'RAISE';
-      if (strength > potOdds + 0.05) return 'CALL';
+      // Late Position: etwas mehr Calls mit schwächeren Händen (implied odds)
+      final callThreshold = potOdds + 0.05 - PositionAwareness.equityBoost(pokerPos);
+      if (strength > callThreshold) return 'CALL';
       return 'FOLD';
     }
   }
