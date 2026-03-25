@@ -9,6 +9,8 @@ import 'preflop_ranges.dart';
 import 'opponent_tracker.dart';
 import 'draw_analyzer.dart';
 import 'bet_sizer.dart';
+import 'stack_awareness.dart';
+import 'position_awareness.dart';
 
 // ─── Farben ───────────────────────────────────────────────────────────────────
 class AC {
@@ -67,8 +69,9 @@ class PokerBrain {
 
   /// Gibt Aktion + Confidence zurück
   /// equity: 0.0-1.0 (Gewinnchance, aus Handstärke geschätzt)
-  /// position: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
+  /// position: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=EP (als Index)
   /// callAmount, pot, stack in Chips
+  /// bigBlind: Größe des Big Blinds für Stack-in-BB Berechnung
   /// street: 0=preflop, 1=flop, 2=turn, 3=river
   /// boardWetness: 0=dry, 1=wet (flush/straight-heavy board)
   ({String action, double confidence, List<double> scores}) recommend({
@@ -79,17 +82,31 @@ class PokerBrain {
     required double stack,
     required int street,
     double boardWetness = 0.3,
+    double bigBlind = 2.0,
   }) {
     if (_interpreter == null) return (action: '?', confidence: 0, scores: [0,0,0,0]);
     try {
-      final pos = position / 5.0;
+      final pokerPos = PositionAwareness.fromIndex(position);
+      // Position-Awareness: Equity-Boost durch Position
+      final adjustedEquity = (equity + PositionAwareness.equityBoost(pokerPos)).clamp(0.0, 1.0);
+
+      // Stack-Awareness: Stack in BB berechnen
+      final stackBbRaw = StackAwareness.stackInBb(stack, bigBlind);
+      final stackType = StackAwareness.classify(stackBbRaw);
+
+      // Equity-Threshold Anpassung nach Stack-Größe
+      final effectiveEquity = (adjustedEquity + StackAwareness.bluffAdjustment(stackType))
+          .clamp(0.0, 1.0);
+
+      final pos = PositionAwareness.toModelInput(pokerPos); // normalisierter Positions-Input
       final potOdds = (pot + callAmount) > 0 ? callAmount / (pot + callAmount) : 0.0;
       final spr = pot > 0 ? (stack / pot).clamp(0.0, 20.0) / 20.0 : 1.0;
       final str = street / 3.0;
       final aggression = pot > 0 ? (callAmount / (pot * 0.75 + 0.01)).clamp(0.0, 1.0) : 0.0;
-      final stackBb = (stack / 2.0).clamp(0.0, 200.0) / 200.0; // angenommen BB=2
+      // Stack-Ratio: normalisiert auf 0–1 (200bb = max deep stack)
+      final stackBb = stackBbRaw.clamp(0.0, 200.0) / 200.0;
 
-      final input = [[equity, pos, potOdds, spr, str, aggression, stackBb, boardWetness]
+      final input = [[effectiveEquity, pos, potOdds, spr, str, aggression, stackBb, boardWetness]
           .map((e) => e.toDouble()).toList()];
       final output = [List.filled(4, 0.0)];
       _interpreter!.run(input, output);
@@ -100,8 +117,28 @@ class PokerBrain {
       for (int i = 1; i < 4; i++) {
         if (scores[i] > maxVal) { maxVal = scores[i]; maxIdx = i; }
       }
+
+      String action = kActions[maxIdx];
+
+      // Stack-Overlay: Push/Fold Zone Override
+      action = StackAwareness.applyStackOverlay(
+        baseAction: action,
+        stackInBb: stackBbRaw,
+        equity: effectiveEquity,
+        isPreflop: street == 0,
+      );
+
+      // Position-Overlay: Late Position öffnet breiter, Early Position enger
+      action = PositionAwareness.applyPositionOverlay(
+        baseAction: action,
+        position: pokerPos,
+        equity: effectiveEquity,
+        isPreflop: street == 0,
+        facingNoRaise: callAmount == 0,
+      );
+
       return (
-        action: kActions[maxIdx],
+        action: action,
         confidence: maxVal,
         scores: List<double>.from(scores),
       );
@@ -269,6 +306,7 @@ final OpponentTracker globalTracker = OpponentTracker();
 class _RPState extends State<RP> {
   int p = 2, hr = 0;
   double pt = 100, tc = 20, ss = 200;
+  double bb = 2; // Big Blind Größe
   String r = '';
   double _confidence = 0;
   List<double> _scores = [0, 0, 0, 0];
@@ -276,7 +314,8 @@ class _RPState extends State<RP> {
   String _handName = '';
   String _oppType = '';
   BetSizing? _betSizing;
-  final ps = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+  // Position-Namen: Index 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=EP
+  final ps = PositionAwareness.positionNames;
   final PokerBrain _brain = PokerBrain();
   bool _brainReady = false;
   bool _calcEquity = false;
@@ -314,12 +353,12 @@ class _RPState extends State<RP> {
     return maxSuit >= 3 ? 0.8 : maxSuit == 2 ? 0.5 : 0.2;
   }
 
-  // Preflop-Empfehlung aus Range-Tabellen
+  // Preflop-Empfehlung aus Range-Tabellen (position-aware)
   String? _preflopAdvice() {
     if (_street != 0 || widget.M.length < 2) return null;
     final c1 = widget.M[0];
     final c2 = widget.M[1];
-    return PreflopRanges.preflopAdvice(
+    return PreflopRanges.preflopAdviceWithPosition(
       c1['r'] ?? 'A', c1['s'] ?? '♠',
       c2['r'] ?? 'K', c2['s'] ?? '♦',
       p, tc, pt,
@@ -345,7 +384,7 @@ class _RPState extends State<RP> {
     final oppStats = globalTracker.aggregated;
     _oppType = oppStats.handsPlayed > 3 ? oppStats.playerTypeName : '';
 
-    // DL Brain Empfehlung
+    // DL Brain Empfehlung (mit Stack- und Position-Awareness)
     final result = _brain.recommend(
       equity: equity,
       position: p,
@@ -354,6 +393,7 @@ class _RPState extends State<RP> {
       stack: ss,
       street: _street,
       boardWetness: _boardWetness(),
+      bigBlind: bb,
     );
 
     // Preflop: Range-Tabelle hat Vorrang
@@ -371,7 +411,9 @@ class _RPState extends State<RP> {
       }
     }
 
-    if (action == 'RAISE' && ss < 40) action = 'ALL-IN';
+    // Stack-Awareness: Short Stack geht All-In statt Raise
+    final stackBbs = StackAwareness.stackInBb(ss, bb);
+    if (action == 'RAISE' && StackAwareness.shouldGoAllIn(stackBbs)) action = 'ALL-IN';
 
     // Hand-Name anzeigen
     _handName = _street > 0 && widget.M.isNotEmpty
@@ -545,10 +587,14 @@ class _RPState extends State<RP> {
               ]),
             ),
           const SizedBox(height: 20),
+          // ── Stack & Position Info Badge ─────────────────────────────────
+          _stackPositionBadge(),
+          const SizedBox(height: 12),
           _dropdown('Position', p, ps, (x) => setState(() => p = x)),
           _slider('Pot', pt, 500, (x) => setState(() => pt = x)),
           _slider('Zu zahlen', tc, 200, (x) => setState(() => tc = x)),
           _slider('Stack', ss, 500, (x) => setState(() => ss = x)),
+          _slider('Big Blind', bb, 50, (x) => setState(() => bb = x < 1 ? 1 : x), unit: '\$'),
           const SizedBox(height: 20),
           // Draw-Anzeige
           if (widget.M.isNotEmpty && widget.B.isNotEmpty) ...[
@@ -568,6 +614,58 @@ class _RPState extends State<RP> {
             ),
           ),
         ]),
+      ),
+    );
+  }
+
+  // ── Stack & Position Info Badge ──────────────────────────────────────────
+  Widget _stackPositionBadge() {
+    final pokerPos = PositionAwareness.fromIndex(p);
+    final stackBbs = StackAwareness.stackInBb(ss, bb);
+    final stackType = StackAwareness.classify(stackBbs);
+    final stackColor = Color(StackAwareness.displayColor(stackType));
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AC.PN,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade700),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          // Position Anzeige
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('POSITION', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 2),
+            Text(
+              PositionAwareness.displayLabel(pokerPos),
+              style: const TextStyle(
+                  color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              PositionAwareness.strategyHint(pokerPos),
+              style: const TextStyle(color: Colors.grey, fontSize: 10),
+            ),
+          ]),
+          // Divider
+          Container(width: 1, height: 40, color: Colors.grey.shade700),
+          // Stack Anzeige
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            const Text('STACK', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 2),
+            Text(
+              StackAwareness.displayLabel(stackBbs),
+              style: TextStyle(
+                  color: stackColor, fontSize: 14, fontWeight: FontWeight.bold),
+            ),
+            Text(
+              StackAwareness.strategyHint(stackBbs),
+              style: const TextStyle(color: Colors.grey, fontSize: 10),
+            ),
+          ]),
+        ],
       ),
     );
   }
@@ -624,17 +722,17 @@ class _RPState extends State<RP> {
         ]),
       );
 
-  Widget _slider(String l, double v, double m, Function f) => Column(
+  Widget _slider(String l, double v, double m, Function f, {String? unit}) => Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Text('$l: \$${v.toStringAsFixed(0)}',
+          Text('$l: ${unit ?? '\$'}${v.toStringAsFixed(0)}',
               style: const TextStyle(color: Colors.white70, fontSize: 13)),
           SliderTheme(
             data: SliderTheme.of(context).copyWith(
               activeTrackColor: AC.P, thumbColor: AC.P,
               inactiveTrackColor: Colors.grey.shade800,
             ),
-            child: Slider(value: v, min: 0, max: m, onChanged: (x) => f(x)),
+            child: Slider(value: v, min: unit != null ? 1 : 0, max: m, onChanged: (x) => f(x)),
           ),
         ],
       );
