@@ -1,10 +1,29 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
+import 'package:sensors_plus/sensors_plus.dart';
+import 'package:shared_preferences/shared_preferences.dart';
+import 'dart:async';
 import 'opponent_model.dart';
 import 'pot_odds.dart';
 import 'hand_history.dart';
 import 'preflop_chart.dart';
+
+// ── Feature 1: Hand Equity Lookup Table ──────────────────────────────────────
+const Map<int, double> _handEquityTable = {
+  0: 0.35, // High Card
+  1: 0.55, // One Pair
+  2: 0.65, // Two Pair
+  3: 0.73, // Three of a Kind
+  4: 0.76, // Straight
+  5: 0.78, // Flush
+  6: 0.88, // Full House
+  7: 0.95, // Four of a Kind
+  8: 0.97, // Straight Flush
+};
+
+double handEquityFromRank(int rank) =>
+    _handEquityTable[rank.clamp(0, 8)] ?? 0.50;
 
 void main() {
   runApp(const PokerKillerApp());
@@ -786,6 +805,43 @@ class _RecommenderPageState extends State<RecommenderPage> {
   // Bet Size Button selection (Feature 7)
   int _selectedBetBtn = -1;
 
+  // Shake (Feature 4)
+  StreamSubscription? _accelSub;
+  DateTime _lastShake = DateTime(2000);
+
+  @override
+  void initState() {
+    super.initState();
+    // Shake to Reset
+    _accelSub = accelerometerEventStream().listen((event) {
+      final total = event.x.abs() + event.y.abs() + event.z.abs();
+      if (total > 25) {
+        final now = DateTime.now();
+        if (now.difference(_lastShake).inSeconds > 2) {
+          _lastShake = now;
+          _resetAll();
+        }
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _accelSub?.cancel();
+    super.dispose();
+  }
+
+  void _resetAll() {
+    HapticFeedback.heavyImpact();
+    setState(() {
+      recommendation = '';
+      reason = '';
+      _foldPct = 0; _callPct = 0; _raisePct = 0;
+      _betDisplay = ''; _betReason = '';
+      _selectedBetBtn = -1;
+    });
+  }
+
   String recommendation = '';
   String reason = '';
   BoardAnalysis _boardAnalysis = const BoardAnalysis(
@@ -872,13 +928,13 @@ class _RecommenderPageState extends State<RecommenderPage> {
     final stackBb = stackSize / _bigBlindSize;
 
     // Opponent Modeling: Score-Modifier
-    final oppMod = opponentScoreModifier(vpip: _vpip, pfr: _pfr, handScore: handRank / 8.0);
+    final oppMod = opponentScoreModifier(vpip: _vpip, pfr: _pfr, handScore: handEquityFromRank(handRank));
 
     // Position-Awareness
     final positionBonus = position <= 3 ? (3 - position) * 0.05 : 0.0;
     final positionPenalty = position >= 4 ? (position - 3) * 0.04 : 0.0;
 
-    double score = (handRank / 8.0) * 0.6
+    double score = handEquityFromRank(handRank) * 0.6
         + ((6 - position) / 6.0) * 0.3
         + positionBonus
         - positionPenalty
@@ -964,7 +1020,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
     String potOddsReason = '';
     String? potOddsOverride;
     if (toCall > 0 && pot + toCall > 0) {
-      final handEquity = handRank / 8.0;
+      final handEquity = handEquityFromRank(handRank);
       final requiredEquity = toCall / (pot + toCall);
       final requiredPct = (requiredEquity * 100).toStringAsFixed(0);
       final hasPct = (handEquity * 100).toStringAsFixed(0);
@@ -1397,7 +1453,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
             // Pot Odds
             PotOddsWidget(
-              handEquityPercent: (handRank / 8.0) * 100,
+              handEquityPercent: handEquityFromRank(handRank) * 100,
             ),
 
             const SizedBox(height: 20),
