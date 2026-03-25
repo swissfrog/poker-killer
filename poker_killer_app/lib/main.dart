@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
+import 'dart:ui';
 import 'package:sensors_plus/sensors_plus.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -414,6 +415,45 @@ List<DrawInfo> detectDraws(List<CardModel> holeCards, List<CardModel> board) {
   return results;
 }
 
+// ===================== GLASSMORPHISM PANEL WIDGET =====================
+
+class GlassmorphismPanel extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets padding;
+  final BorderRadius borderRadius;
+  final Color? borderColor;
+
+  const GlassmorphismPanel({
+    super.key,
+    required this.child,
+    this.padding = const EdgeInsets.all(16),
+    this.borderRadius = const BorderRadius.all(Radius.circular(12)),
+    this.borderColor,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: borderRadius,
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: Colors.white.withOpacity(0.08),
+            borderRadius: borderRadius,
+            border: Border.all(
+              color: borderColor ?? Colors.white.withOpacity(0.2),
+              width: 1,
+            ),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 // ===================== COMMUNITY CARDS WIDGET =====================
 
 class CommunityCardsWidget extends StatefulWidget {
@@ -478,13 +518,9 @@ class _CommunityCardsWidgetState extends State<CommunityCardsWidget> {
 
     final streetLabel = ['', 'Flop', 'Turn', 'River'][widget.street];
 
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade800),
-      ),
+      borderRadius: BorderRadius.circular(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -774,13 +810,9 @@ class _HoleCardsWidgetState extends State<HoleCardsWidget> {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade800),
-      ),
+      borderRadius: BorderRadius.circular(12),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -870,7 +902,8 @@ class RecommenderPage extends StatefulWidget {
   State<RecommenderPage> createState() => _RecommenderPageState();
 }
 
-class _RecommenderPageState extends State<RecommenderPage> {
+class _RecommenderPageState extends State<RecommenderPage>
+    with TickerProviderStateMixin {
   int position = 2;
   int street = 0;
   int handRank = 5;
@@ -899,9 +932,49 @@ class _RecommenderPageState extends State<RecommenderPage> {
   StreamSubscription? _accelSub;
   DateTime _lastShake = DateTime(2000);
 
+  // ── Animation Controllers ──────────────────────────────────────────────
+  late AnimationController _flipController;
+  late AnimationController _glowController;
+  late AnimationController _bgController;
+  late Animation<double> _flipAnimation;
+  late Animation<double> _glowAnimation;
+  late Animation<Color?> _bgColorAnimation;
+
+  bool _showFront = true;
+  String _bgGradientTarget = 'none'; // 'none', 'fold', 'call', 'raise'
+
   @override
   void initState() {
     super.initState();
+
+    // Card flip animation (400ms, easeInOut)
+    _flipController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 400),
+    );
+    _flipAnimation = Tween<double>(begin: 0, end: 1).animate(
+      CurvedAnimation(parent: _flipController, curve: Curves.easeInOut),
+    );
+
+    // Glow pulse animation (loop 0→20→0)
+    _glowController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 1500),
+    )..repeat(reverse: true);
+    _glowAnimation = Tween<double>(begin: 0, end: 20).animate(
+      CurvedAnimation(parent: _glowController, curve: Curves.easeInOut),
+    );
+
+    // Background gradient animation
+    _bgController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 800),
+    );
+    _bgColorAnimation = ColorTween(
+      begin: AppConfig.bgColor,
+      end: AppConfig.bgColor,
+    ).animate(_bgController);
+
     // Shake to Reset
     _accelSub = accelerometerEventStream().listen((event) {
       final total = event.x.abs() + event.y.abs() + event.z.abs();
@@ -918,6 +991,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
   @override
   void dispose() {
     _accelSub?.cancel();
+    _flipController.dispose();
+    _glowController.dispose();
+    _bgController.dispose();
     super.dispose();
   }
 
@@ -929,6 +1005,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
       _foldPct = 0; _callPct = 0; _raisePct = 0;
       _betDisplay = ''; _betReason = '';
       _selectedBetBtn = -1;
+      _bgGradientTarget = 'none';
     });
   }
 
@@ -960,6 +1037,35 @@ class _RecommenderPageState extends State<RecommenderPage> {
     'High Card', 'Pair', 'Two Pair', 'Three of Kind',
     'Straight', 'Flush', 'Full House', 'Four of Kind', 'Straight Flush'
   ];
+
+  // ── Recommendation glow color ────────────────────────────────────────────
+  Color get _glowColor {
+    if (recommendation.isEmpty) return AppConfig.primaryColor;
+    final rec = recommendation.toLowerCase();
+    if (rec.contains('erhöh') || rec.contains('raise') || rec.contains('all')) {
+      return Colors.blue;
+    } else if (rec.contains('pass') || rec.contains('fold') || rec.contains('check')) {
+      return Colors.red;
+    } else {
+      return Colors.green;
+    }
+  }
+
+  // ── Background gradient colors ───────────────────────────────────────────
+  List<Color> get _bgGradientColors {
+    if (recommendation.isEmpty) {
+      return [AppConfig.bgColor, AppConfig.bgColor];
+    }
+    final rec = recommendation.toLowerCase();
+    if (rec.contains('erhöh') || rec.contains('raise') || rec.contains('all')) {
+      return [const Color(0xFF0D1B2A), const Color(0xFF1a1a4e)]; // dark blue
+    } else if (rec.contains('pass') || rec.contains('fold')) {
+      return [const Color(0xFF2A0D0D), const Color(0xFF1a1a2e)]; // dark red
+    } else if (rec.contains('call') || rec.contains('check') || rec.contains('mitgeh')) {
+      return [const Color(0xFF0D2A0D), const Color(0xFF1a1a2e)]; // dark green
+    }
+    return [AppConfig.bgColor, AppConfig.bgColor];
+  }
 
   // ── Stack-Awareness Helper ──────────────────────────────────────────────
   String _positionHint(int pos, double stackBb) {
@@ -1015,6 +1121,13 @@ class _RecommenderPageState extends State<RecommenderPage> {
   }
 
   void _getRecommendation() {
+    // Trigger card flip animation
+    _showFront = false;
+    _flipController.forward(from: 0).then((_) {
+      _showFront = true;
+      _flipController.reverse();
+    });
+
     final stackBb = stackSize / _bigBlindSize;
 
     // Opponent Modeling: Score-Modifier
@@ -1137,7 +1250,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
       newRec = 'Passen';
       newReason = 'Zu teuer | $posHint';
     } else if (score > 0.75) {
-      newRec = stackBb < 20 ? 'All-In' : 'Erh�hen';
+      newRec = stackBb < 20 ? 'All-In' : 'Erhöhen';
       newReason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
     } else if (score > 0.5) {
       newRec = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
@@ -1174,12 +1287,12 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // ── Bet-Sizing ────────────────────────────────────────────────────────
     String betDisplay = '';
     String betReason  = '';
-    if (newRec == 'RAISE' || newRec == 'ALL-IN') {
+    if (newRec == 'RAISE' || newRec == 'ALL-IN' || newRec == 'Erhöhen' || newRec == 'All-In') {
       double fraction;
       String fracLabel;
       String sizingReason;
 
-      if (newRec == 'ALL-IN') {
+      if (newRec == 'ALL-IN' || newRec == 'All-In') {
         fraction = stackSize;
         fracLabel = 'All-In';
         sizingReason = 'Push/Fold Zone → All-In';
@@ -1205,7 +1318,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
         fracLabel = '33% Pot';
         sizingReason = 'C-Bet / Probe → 33% Pot';
       }
-      final betAmt = (newRec == 'ALL-IN') ? stackSize : fraction.clamp(0.0, stackSize);
+      final betAmt = (newRec == 'ALL-IN' || newRec == 'All-In') ? stackSize : fraction.clamp(0.0, stackSize);
       final betBb  = betAmt / _bigBlindSize;
       betDisplay   = '\$${betAmt.toStringAsFixed(0)}  (${betBb.toStringAsFixed(1)} BB · $fracLabel)';
       betReason    = sizingReason;
@@ -1283,9 +1396,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
                 child: Container(
                   padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
                   decoration: BoxDecoration(
-                    color: selected ? AppConfig.primaryColor.withOpacity(0.3) : AppConfig.panelColor,
+                    color: selected ? AppConfig.primaryColor.withOpacity(0.3) : Colors.white.withOpacity(0.08),
                     borderRadius: BorderRadius.circular(8),
-                    border: Border.all(color: selected ? AppConfig.primaryColor : Colors.grey.shade700),
+                    border: Border.all(color: selected ? AppConfig.primaryColor : Colors.white.withOpacity(0.2)),
                   ),
                   child: Text(
                     '$label\n\$${val.toStringAsFixed(0)}',
@@ -1315,294 +1428,337 @@ class _RecommenderPageState extends State<RecommenderPage> {
     await _tts.speak(text);
   }
 
+  // ── Build animated recommendation box ──────────────────────────────────
+  Widget _buildRecommendationBox() {
+    return AnimatedBuilder(
+      animation: Listenable.merge([_flipAnimation, _glowAnimation]),
+      builder: (context, child) {
+        final flipValue = _flipAnimation.value;
+        final angle = flipValue * pi;
+        final isShowingBack = angle > pi / 2;
+        final glowSize = _glowAnimation.value;
+
+        return Transform(
+          alignment: Alignment.center,
+          transform: Matrix4.identity()
+            ..setEntry(3, 2, 0.001)
+            ..rotateY(angle),
+          child: isShowingBack
+              ? Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                  decoration: BoxDecoration(
+                    color: Colors.black87,
+                    borderRadius: BorderRadius.circular(16),
+                    boxShadow: [
+                      BoxShadow(
+                        color: _glowColor.withOpacity(0.4),
+                        blurRadius: glowSize,
+                        spreadRadius: glowSize * 0.3,
+                      ),
+                    ],
+                  ),
+                  child: const Center(
+                    child: Text('🃏', style: TextStyle(fontSize: 48)),
+                  ),
+                )
+              : Transform(
+                  alignment: Alignment.center,
+                  transform: Matrix4.identity()..rotateY(pi),
+                  child: Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                    decoration: BoxDecoration(
+                      gradient: LinearGradient(
+                        colors: recommendation == 'All-In' || recommendation == 'ALL-IN'
+                            ? [Colors.red, Colors.red.shade700]
+                            : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
+                        begin: Alignment.topLeft,
+                        end: Alignment.bottomRight,
+                      ),
+                      borderRadius: BorderRadius.circular(16),
+                      boxShadow: [
+                        BoxShadow(
+                          color: _glowColor.withOpacity(0.5),
+                          blurRadius: glowSize + 10,
+                          spreadRadius: glowSize * 0.4,
+                        ),
+                      ],
+                    ),
+                    child: Column(
+                      children: [
+                        Text(AppConfig.t('recommendation').toUpperCase(),
+                            style: const TextStyle(fontSize: 14, color: Colors.black54)),
+                        Text(recommendation,
+                            style: const TextStyle(
+                                fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
+                        Row(
+                          mainAxisAlignment: MainAxisAlignment.center,
+                          children: [
+                            if (isBluff) const Text('🎭 ', style: TextStyle(fontSize: 20)),
+                            Flexible(
+                              child: Text(reason,
+                                  style: const TextStyle(fontSize: 13, color: Colors.black87),
+                                  textAlign: TextAlign.center),
+                            ),
+                          ],
+                        ),
+                      ],
+                    ),
+                  ),
+                ),
+        );
+      },
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      appBar: AppBar(
-        title: Row(
-          mainAxisSize: MainAxisSize.min,
-          children: [
-            const Text('🃏 ', style: TextStyle(fontSize: 24)),
-            Text(AppConfig.appName, style: const TextStyle(fontWeight: FontWeight.bold)),
+    final bgColors = _bgGradientColors;
+
+    return AnimatedContainer(
+      duration: const Duration(milliseconds: 800),
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          colors: bgColors,
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+        ),
+      ),
+      child: Scaffold(
+        backgroundColor: Colors.transparent,
+        appBar: AppBar(
+          backgroundColor: Colors.white.withOpacity(0.05),
+          title: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Text('🃏 ', style: TextStyle(fontSize: 24)),
+              Text(AppConfig.appName, style: const TextStyle(fontWeight: FontWeight.bold)),
+            ],
+          ),
+          centerTitle: true,
+          actions: [
+            IconButton(
+              icon: const Icon(Icons.style),
+              tooltip: 'Preflop Range Chart',
+              onPressed: () => showDialog(
+                context: context,
+                builder: (_) => Dialog(
+                  backgroundColor: AppConfig.panelColor,
+                  child: PreflopChartScreen(initialPosition: position),
+                ),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.history),
+              tooltip: 'Hand History',
+              onPressed: () => Navigator.push(
+                context,
+                MaterialPageRoute(builder: (_) => const HandHistoryScreen()),
+              ),
+            ),
+            IconButton(
+              icon: const Icon(Icons.brightness_6),
+              tooltip: 'Dark/Light Mode',
+              onPressed: () {
+                final app = context.findAncestorStateOfType<_PokerKillerAppState>();
+                app?.toggleTheme();
+              },
+            ),
+            IconButton(
+              icon: Icon(ttsEnabled ? Icons.volume_up : Icons.volume_off),
+              onPressed: () => setState(() => ttsEnabled = !ttsEnabled),
+            ),
           ],
         ),
-        centerTitle: true,
-        actions: [
-          IconButton(
-            icon: const Icon(Icons.style),
-            tooltip: 'Preflop Range Chart',
-            onPressed: () => showDialog(
-              context: context,
-              builder: (_) => Dialog(
+        floatingActionButton: _lastPosition != null
+            ? FloatingActionButton.small(
+                onPressed: _restoreLastHand,
                 backgroundColor: AppConfig.panelColor,
-                child: PreflopChartScreen(initialPosition: position),
-              ),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.history),
-            tooltip: 'Hand History',
-            onPressed: () => Navigator.push(
-              context,
-              MaterialPageRoute(builder: (_) => const HandHistoryScreen()),
-            ),
-          ),
-          IconButton(
-            icon: const Icon(Icons.brightness_6),
-            tooltip: 'Dark/Light Mode',
-            onPressed: () {
-              final app = context.findAncestorStateOfType<_PokerKillerAppState>();
-              app?.toggleTheme();
-            },
-          ),
-          IconButton(
-            icon: Icon(ttsEnabled ? Icons.volume_up : Icons.volume_off),
-            onPressed: () => setState(() => ttsEnabled = !ttsEnabled),
-          ),
-        ],
-      ),
-      floatingActionButton: _lastPosition != null
-          ? FloatingActionButton.small(
-              onPressed: _restoreLastHand,
-              backgroundColor: AppConfig.panelColor,
-              tooltip: 'Letzte Hand',
-              child: const Icon(Icons.replay, color: AppConfig.primaryColor),
-            )
-          : null,
-      body: SingleChildScrollView(
-        padding: const EdgeInsets.all(16),
-        child: Column(
-          crossAxisAlignment: CrossAxisAlignment.stretch,
-          children: [
-            // ── Empfehlung Haupt-Box ─────────────────────────────────────
-            if (recommendation.isNotEmpty) ...[
-              Container(
-                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-                decoration: BoxDecoration(
-                  gradient: LinearGradient(
-                    colors: recommendation == 'All-In'
-                        ? [Colors.red, Colors.red.shade700]
-                        : [AppConfig.primaryColor, AppConfig.primaryColor.withOpacity(0.7)],
-                    begin: Alignment.topLeft,
-                    end: Alignment.bottomRight,
-                  ),
-                  borderRadius: BorderRadius.circular(16),
-                  boxShadow: [
-                    BoxShadow(
-                      color: AppConfig.primaryColor.withOpacity(0.3),
-                      blurRadius: 20,
-                      offset: const Offset(0, 10),
-                    ),
-                  ],
-                ),
-                child: Column(
-                  children: [
-                    Text(AppConfig.t('recommendation').toUpperCase(),
-                        style: const TextStyle(fontSize: 14, color: Colors.black54)),
-                    Text(recommendation,
-                        style: const TextStyle(
-                            fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        if (isBluff) const Text('🎭 ', style: TextStyle(fontSize: 20)),
-                        Flexible(
-                          child: Text(reason,
-                              style: const TextStyle(fontSize: 13, color: Colors.black87),
-                              textAlign: TextAlign.center),
-                        ),
-                      ],
-                    ),
-                  ],
-                ),
-              ),
-              const SizedBox(height: 10),
+                tooltip: 'Letzte Hand',
+                child: const Icon(Icons.replay, color: AppConfig.primaryColor),
+              )
+            : null,
+        body: SingleChildScrollView(
+          padding: const EdgeInsets.all(16),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              // ── Empfehlung Haupt-Box ─────────────────────────────────────
+              if (recommendation.isNotEmpty) ...[
+                _buildRecommendationBox(),
+                const SizedBox(height: 10),
 
-              // ── Action Probabilities ──────────────────────────────────
-              Container(
-                padding: const EdgeInsets.all(16),
-                decoration: BoxDecoration(
-                  color: AppConfig.panelColor,
+                // ── Action Probabilities ──────────────────────────────────
+                GlassmorphismPanel(
+                  padding: const EdgeInsets.all(16),
                   borderRadius: BorderRadius.circular(12),
-                  border: Border.all(color: Colors.grey.shade800),
+                  child: Column(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      const Text('WAHRSCHEINLICHKEITEN',
+                          style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+                      const SizedBox(height: 10),
+                      _buildActionBar('FOLD',         _foldPct,  Colors.red.shade600),
+                      _buildActionBar('CHECK / CALL', _callPct,  Colors.green.shade600),
+                      _buildActionBar('RAISE',        _raisePct, Colors.blue.shade500),
+                    ],
+                  ),
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+
+                // ── Bet-Sizing ────────────────────────────────────────────
+                if (_betDisplay.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  GlassmorphismPanel(
+                    padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                    borderRadius: BorderRadius.circular(12),
+                    borderColor: Colors.blue.shade700,
+                    child: Column(children: [
+                      Row(
+                        mainAxisAlignment: MainAxisAlignment.center,
+                        children: [
+                          const Icon(Icons.attach_money, color: Colors.white, size: 20),
+                          const SizedBox(width: 4),
+                          Flexible(
+                            child: Text(
+                              _betDisplay,
+                              style: const TextStyle(
+                                  fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                              textAlign: TextAlign.center,
+                            ),
+                          ),
+                        ],
+                      ),
+                      const SizedBox(height: 4),
+                      Text(_betReason,
+                          style: const TextStyle(fontSize: 11, color: Colors.white70),
+                          textAlign: TextAlign.center),
+                    ]),
+                  ),
+                ],
+
+                // ── Board Texture Info (post-flop only) ───────────────────
+                if (street > 0 && communityCards.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _buildBoardTextureCard(),
+                ],
+
+                // ── Draw Detections ───────────────────────────────────────
+                if (_draws.isNotEmpty) ...[
+                  const SizedBox(height: 8),
+                  _buildDrawsCard(),
+                ],
+              ],
+
+              const SizedBox(height: 16),
+
+              // Quick Actions
+              if (recommendation.isNotEmpty)
+                Row(
+                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
                   children: [
-                    const Text('WAHRSCHEINLICHKEITEN',
-                        style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
-                    const SizedBox(height: 10),
-                    _buildActionBar('FOLD',         _foldPct,  Colors.red.shade600),
-                    _buildActionBar('CHECK / CALL', _callPct,  Colors.green.shade600),
-                    _buildActionBar('RAISE',        _raisePct, Colors.blue.shade500),
+                    _buildQuickAction('FOLD', Colors.red),
+                    _buildQuickAction('CALL', Colors.orange),
+                    _buildQuickAction('RAISE', AppConfig.primaryColor),
+                  ],
+                ),
+
+              const SizedBox(height: 16),
+
+              // Stack & Position Badge
+              _buildStackPositionBadge(),
+              const SizedBox(height: 8),
+
+              _buildDropdown('Position', position, positions, (v) => setState(() => position = v)),
+              _buildDropdown('Street', street, streets, (v) {
+                setState(() {
+                  street = v;
+                  // Clear community cards if switching to preflop
+                  if (v == 0) communityCards = [];
+                });
+              }),
+              _buildDropdown('Hand', handRank, handNames, (v) => setState(() => handRank = v)),
+              _buildSlider('Pot', pot, 500, (v) => setState(() => pot = v)),
+              // Bet Size Buttons (Feature 7)
+              _buildBetSizeButtons(),
+              _buildSlider('Stack', stackSize, 500, (v) => setState(() => stackSize = v)),
+
+              const SizedBox(height: 12),
+
+              // ── Community Cards Input ─────────────────────────────────────
+              if (street > 0) ...[
+                CommunityCardsWidget(
+                  cards: communityCards,
+                  street: street,
+                  onChanged: (cards) => setState(() => communityCards = cards),
+                ),
+                const SizedBox(height: 8),
+              ],
+
+              // ── Hole Cards Input (optional) ───────────────────────────────
+              HoleCardsWidget(
+                cards: holeCards,
+                onChanged: (cards) => setState(() => holeCards = cards),
+              ),
+
+              const SizedBox(height: 12),
+
+              // Board Info (old chip row) — show only if no community cards entered
+              if (street > 0 && communityCards.isEmpty)
+                _buildBoardInfo(),
+
+              const SizedBox(height: 12),
+
+              // Opponent Modeling
+              OpponentModelWidget(
+                initialVpip: _vpip,
+                initialPfr:  _pfr,
+                onVpipChanged: (v) => setState(() => _vpip = v),
+                onPfrChanged:  (p) => setState(() => _pfr  = p),
+              ),
+
+              const SizedBox(height: 8),
+
+              // Pot Odds
+              PotOddsWidget(
+                handEquityPercent: handEquityFromRank(handRank) * 100,
+              ),
+
+              const SizedBox(height: 20),
+
+              // CTA Button
+              ElevatedButton(
+                onPressed: _getRecommendation,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AppConfig.primaryColor,
+                  foregroundColor: Colors.black,
+                  padding: const EdgeInsets.all(16),
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: Text('🎯 ${AppConfig.t('recommendation').toUpperCase()}',
+                    style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
+              ),
+
+              const SizedBox(height: 12),
+
+              // ML Info
+              GlassmorphismPanel(
+                padding: const EdgeInsets.all(12),
+                borderRadius: BorderRadius.circular(8),
+                child: Row(
+                  mainAxisAlignment: MainAxisAlignment.center,
+                  children: [
+                    const Icon(Icons.psychology, color: AppConfig.primaryColor, size: 20),
+                    const SizedBox(width: 8),
+                    const Text('ML: ', style: TextStyle(color: Colors.grey)),
+                    const Text('86.9%',
+                        style: TextStyle(
+                            color: AppConfig.primaryColor,
+                            fontWeight: FontWeight.bold)),
+                    const Text(' | 100k Hände', style: TextStyle(color: Colors.grey, fontSize: 12)),
                   ],
                 ),
               ),
-
-              // ── Bet-Sizing ────────────────────────────────────────────
-              if (_betDisplay.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                Container(
-                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
-                  decoration: BoxDecoration(
-                    color: Colors.blue.shade900.withOpacity(0.7),
-                    borderRadius: BorderRadius.circular(12),
-                    border: Border.all(color: Colors.blue.shade700),
-                  ),
-                  child: Column(children: [
-                    Row(
-                      mainAxisAlignment: MainAxisAlignment.center,
-                      children: [
-                        const Icon(Icons.attach_money, color: Colors.white, size: 20),
-                        const SizedBox(width: 4),
-                        Flexible(
-                          child: Text(
-                            _betDisplay,
-                            style: const TextStyle(
-                                fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                            textAlign: TextAlign.center,
-                          ),
-                        ),
-                      ],
-                    ),
-                    const SizedBox(height: 4),
-                    Text(_betReason,
-                        style: const TextStyle(fontSize: 11, color: Colors.white70),
-                        textAlign: TextAlign.center),
-                  ]),
-                ),
-              ],
-
-              // ── Board Texture Info (post-flop only) ───────────────────
-              if (street > 0 && communityCards.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                _buildBoardTextureCard(),
-              ],
-
-              // ── Draw Detections ───────────────────────────────────────
-              if (_draws.isNotEmpty) ...[
-                const SizedBox(height: 8),
-                _buildDrawsCard(),
-              ],
             ],
-
-            const SizedBox(height: 16),
-
-            // Quick Actions
-            if (recommendation.isNotEmpty)
-              Row(
-                mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                children: [
-                  _buildQuickAction('FOLD', Colors.red),
-                  _buildQuickAction('CALL', Colors.orange),
-                  _buildQuickAction('RAISE', AppConfig.primaryColor),
-                ],
-              ),
-
-            const SizedBox(height: 16),
-
-            // Stack & Position Badge
-            _buildStackPositionBadge(),
-            const SizedBox(height: 8),
-
-            _buildDropdown('Position', position, positions, (v) => setState(() => position = v)),
-            _buildDropdown('Street', street, streets, (v) {
-              setState(() {
-                street = v;
-                // Clear community cards if switching to preflop
-                if (v == 0) communityCards = [];
-              });
-            }),
-            _buildDropdown('Hand', handRank, handNames, (v) => setState(() => handRank = v)),
-            _buildSlider('Pot', pot, 500, (v) => setState(() => pot = v)),
-            // Bet Size Buttons (Feature 7)
-            _buildBetSizeButtons(),
-            _buildSlider('Stack', stackSize, 500, (v) => setState(() => stackSize = v)),
-
-            const SizedBox(height: 12),
-
-            // ── Community Cards Input ─────────────────────────────────────
-            if (street > 0) ...[
-              CommunityCardsWidget(
-                cards: communityCards,
-                street: street,
-                onChanged: (cards) => setState(() => communityCards = cards),
-              ),
-              const SizedBox(height: 8),
-            ],
-
-            // ── Hole Cards Input (optional) ───────────────────────────────
-            HoleCardsWidget(
-              cards: holeCards,
-              onChanged: (cards) => setState(() => holeCards = cards),
-            ),
-
-            const SizedBox(height: 12),
-
-            // Board Info (old chip row) — show only if no community cards entered
-            if (street > 0 && communityCards.isEmpty)
-              _buildBoardInfo(),
-
-            const SizedBox(height: 12),
-
-            // Opponent Modeling (with animated Fish Detector + Bluff-O-Meter)
-            OpponentModelWidget(
-              initialVpip:   _vpip,
-              initialPfr:    _pfr,
-              onVpipChanged: (v) => setState(() => _vpip = v),
-              onPfrChanged:  (p) => setState(() => _pfr  = p),
-              isBluff:       isBluff,
-              score:         handEquityFromRank(handRank),
-              boardDanger:   _boardAnalysis.dangerScore,
-              street:        street,
-            ),
-
-            const SizedBox(height: 8),
-
-            // Pot Odds
-            PotOddsWidget(
-              handEquityPercent: handEquityFromRank(handRank) * 100,
-            ),
-
-            const SizedBox(height: 20),
-
-            // CTA Button
-            ElevatedButton(
-              onPressed: _getRecommendation,
-              style: ElevatedButton.styleFrom(
-                backgroundColor: AppConfig.primaryColor,
-                foregroundColor: Colors.black,
-                padding: const EdgeInsets.all(16),
-                shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
-              ),
-              child: Text('🎯 ${AppConfig.t('recommendation').toUpperCase()}',
-                  style: const TextStyle(fontSize: 18, fontWeight: FontWeight.bold)),
-            ),
-
-            const SizedBox(height: 12),
-
-            // ML Info
-            Container(
-              padding: const EdgeInsets.all(12),
-              decoration: BoxDecoration(
-                color: AppConfig.panelColor,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: Row(
-                mainAxisAlignment: MainAxisAlignment.center,
-                children: [
-                  const Icon(Icons.psychology, color: AppConfig.primaryColor, size: 20),
-                  const SizedBox(width: 8),
-                  const Text('ML: ', style: TextStyle(color: Colors.grey)),
-                  const Text('86.9%',
-                      style: TextStyle(
-                          color: AppConfig.primaryColor,
-                          fontWeight: FontWeight.bold)),
-                  const Text(' | 100k Hände', style: TextStyle(color: Colors.grey, fontSize: 12)),
-                ],
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -1622,13 +1778,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
         textureColor = Colors.amber.shade600;
     }
 
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: textureColor.withOpacity(0.1),
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: textureColor.withOpacity(0.5)),
-      ),
+      borderRadius: BorderRadius.circular(12),
+      borderColor: textureColor.withOpacity(0.5),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1686,13 +1839,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
   // ── Draw Detections Card ──────────────────────────────────────────────────
   Widget _buildDrawsCard() {
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.purple.shade800),
-      ),
+      borderRadius: BorderRadius.circular(12),
+      borderColor: Colors.purple.shade800,
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
@@ -1723,9 +1873,8 @@ class _RecommenderPageState extends State<RecommenderPage> {
     );
   }
 
-  // ── Action Bar ────────────────────────────────────────────────────────────
+  // ── Action Bar with animated progress and counter ─────────────────────────
   Widget _buildActionBar(String label, double value, Color color) {
-    final pct = (value * 100).toStringAsFixed(0);
     return Padding(
       padding: const EdgeInsets.only(bottom: 8),
       child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
@@ -1734,19 +1883,36 @@ class _RecommenderPageState extends State<RecommenderPage> {
           children: [
             Text(label,
                 style: TextStyle(color: color, fontSize: 12, fontWeight: FontWeight.bold)),
-            Text('$pct%',
-                style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+            // Counter animation for percentage
+            TweenAnimationBuilder<double>(
+              tween: Tween<double>(begin: 0, end: value * 100),
+              duration: const Duration(milliseconds: 800),
+              builder: (context, animValue, child) {
+                return Text(
+                  '${animValue.toStringAsFixed(0)}%',
+                  style: TextStyle(color: color, fontSize: 13, fontWeight: FontWeight.bold),
+                );
+              },
+            ),
           ],
         ),
         const SizedBox(height: 4),
-        ClipRRect(
-          borderRadius: BorderRadius.circular(4),
-          child: LinearProgressIndicator(
-            value: value.clamp(0.0, 1.0),
-            minHeight: 10,
-            backgroundColor: Colors.grey.shade800,
-            valueColor: AlwaysStoppedAnimation<Color>(color),
-          ),
+        // Animated progress bar (600ms)
+        TweenAnimationBuilder<double>(
+          tween: Tween<double>(begin: 0, end: value.clamp(0.0, 1.0)),
+          duration: const Duration(milliseconds: 600),
+          curve: Curves.easeOut,
+          builder: (context, animValue, child) {
+            return ClipRRect(
+              borderRadius: BorderRadius.circular(4),
+              child: LinearProgressIndicator(
+                value: animValue,
+                minHeight: 10,
+                backgroundColor: Colors.grey.shade800,
+                valueColor: AlwaysStoppedAnimation<Color>(color),
+              ),
+            );
+          },
         ),
       ]),
     );
@@ -1797,13 +1963,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
       default:    posHint = '';
     }
 
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade800),
-      ),
+      borderRadius: BorderRadius.circular(12),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceBetween,
         children: [
@@ -1815,7 +1977,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
                     color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
             Text(posHint, style: const TextStyle(color: Colors.grey, fontSize: 10)),
           ]),
-          Container(width: 1, height: 40, color: Colors.grey.shade800),
+          Container(width: 1, height: 40, color: Colors.white.withOpacity(0.2)),
           Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
             const Text('STACK', style: TextStyle(color: Colors.grey, fontSize: 10)),
             const SizedBox(height: 2),
@@ -1839,20 +2001,27 @@ class _RecommenderPageState extends State<RecommenderPage> {
               width: 90,
               child: Text('$label:', style: const TextStyle(color: Colors.white70))),
           Expanded(
-            child: Container(
-              padding: const EdgeInsets.symmetric(horizontal: 12),
-              decoration: BoxDecoration(
-                color: AppConfig.panelColor,
-                borderRadius: BorderRadius.circular(8),
-              ),
-              child: DropdownButton<int>(
-                value: value,
-                isExpanded: true,
-                underline: const SizedBox(),
-                dropdownColor: AppConfig.panelColor,
-                items: List.generate(items.length,
-                    (i) => DropdownMenuItem(value: i, child: Text(items[i]))),
-                onChanged: (v) => onChanged(v!),
+            child: ClipRRect(
+              borderRadius: BorderRadius.circular(8),
+              child: BackdropFilter(
+                filter: ImageFilter.blur(sigmaX: 10, sigmaY: 10),
+                child: Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.white.withOpacity(0.08),
+                    borderRadius: BorderRadius.circular(8),
+                    border: Border.all(color: Colors.white.withOpacity(0.2)),
+                  ),
+                  child: DropdownButton<int>(
+                    value: value,
+                    isExpanded: true,
+                    underline: const SizedBox(),
+                    dropdownColor: AppConfig.panelColor,
+                    items: List.generate(items.length,
+                        (i) => DropdownMenuItem(value: i, child: Text(items[i]))),
+                    onChanged: (v) => onChanged(v!),
+                  ),
+                ),
               ),
             ),
           ),
@@ -1887,12 +2056,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
     Color dangerColor =
         danger > 6 ? Colors.red : (danger > 3 ? Colors.orange : AppConfig.primaryColor);
 
-    return Container(
+    return GlassmorphismPanel(
       padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: AppConfig.panelColor,
-        borderRadius: BorderRadius.circular(8),
-      ),
+      borderRadius: BorderRadius.circular(8),
       child: Row(
         mainAxisAlignment: MainAxisAlignment.spaceAround,
         children: [
