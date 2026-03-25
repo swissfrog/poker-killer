@@ -89,18 +89,18 @@ with Logger(LOG_DIR) as logger:
         # RLCard trajectory format: [state, action, reward, state, action, reward, ..., state]
         # d.h. abwechselnd: state (dict), action (int), reward (float), state (dict), ...
         trajectories, _ = env.run(is_training=True)
+        # RLCard format: [state, action, next_state, state, action, next_state, ...]
         traj = trajectories[0]
         i = 0
-        while i < len(traj) - 2:
-            state = traj[i]
-            if not isinstance(state, dict):
+        while i + 2 < len(traj):
+            state      = traj[i]
+            action     = traj[i + 1]
+            next_state = traj[i + 2]
+            if not isinstance(state, dict) or not isinstance(next_state, dict):
                 i += 1
                 continue
-            action = traj[i + 1]
-            reward = traj[i + 2]
-            # next_state ist entweder der nächste dict oder der letzte state
-            next_state = traj[i + 3] if (i + 3 < len(traj) and isinstance(traj[i + 3], dict)) else state
-            done = not (i + 3 < len(traj) and isinstance(traj[i + 3], dict))
+            done = (i + 3 >= len(traj))
+            reward = next_state.get('raw_obs', {}).get('my_chips', 0) - state.get('raw_obs', {}).get('my_chips', 0)
             agent.feed_memory(
                 state['obs'],
                 action,
