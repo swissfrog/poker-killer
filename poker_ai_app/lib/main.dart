@@ -163,9 +163,7 @@ class CardClassifier {
   String? classify(CameraImage cameraImage) {
     if (_interpreter == null) return null;
     try {
-      // YUV420 → Graustufen 70x70 float32 [0,1]
       final input = _prepareInput(cameraImage);
-
       final output = [List.filled(52, 0.0)];
       _interpreter!.run(input, output);
 
@@ -179,7 +177,7 @@ class CardClassifier {
         }
       }
 
-      // Mindest-Confidence 15% (gesenkt f�r bessere Erkennung)
+      // Mindest-Confidence 15%
       if (maxVal < 0.15) return null;
       return kKaggleLabels[maxIdx];
     } catch (_) {
@@ -187,7 +185,24 @@ class CardClassifier {
     }
   }
 
-  /// CameraImage → [1][70][70][1] float32
+  /// Gibt Top-3 Kandidaten mit Scores zurück (immer, auch bei niedrigem Confidence)
+  List<({String label, double score})> classifyTopK(CameraImage cameraImage, {int k = 3}) {
+    if (_interpreter == null) return [];
+    try {
+      final input = _prepareInput(cameraImage);
+      final output = [List.filled(52, 0.0)];
+      _interpreter!.run(input, output);
+
+      final scores = output[0];
+      final indexed = List.generate(scores.length, (i) => (label: kKaggleLabels[i], score: scores[i]));
+      indexed.sort((a, b) => b.score.compareTo(a.score));
+      return indexed.take(k).toList();
+    } catch (_) {
+      return [];
+    }
+  }
+
+  /// CameraImage → [1][70][70][1] float32 mit Bild-Vorverarbeitung
   List prepareInput(CameraImage cameraImage) => _prepareInput(cameraImage);
 
   List _prepareInput(CameraImage cameraImage) {
@@ -205,18 +220,116 @@ class CardClassifier {
     }
     final resized = img.copyResize(grayImg, width: 70, height: 70);
 
+    // FIX 2: Bild-Vorverarbeitung ─────────────────────────────────────────
+    // Pixel-Werte sammeln für Mean-Subtraction und Gamma-Korrektur
+    double sum = 0.0;
+    final pixels = List.generate(70 * 70, (i) {
+      final px = resized.getPixel(i % 70, i ~/ 70);
+      final v = px.r / 255.0;
+      sum += v;
+      return v;
+    });
+    final mean = sum / (70 * 70);
+
+    // Gamma-Korrektur: wenn Bild zu dunkel (mean < 0.4), aufhellen
+    // gamma < 1 → heller, gamma > 1 → dunkler
+    final double gamma = mean < 0.3
+        ? 0.5   // sehr dunkel → stark aufhellen
+        : mean < 0.4
+            ? 0.7 // dunkel → leicht aufhellen
+            : 1.0; // normal → keine Korrektur
+
+    // Kontrast-Normalisierung: Min-Max-Stretch auf [0,1]
+    double minV = 1.0, maxV = 0.0;
+    for (final v in pixels) {
+      if (v < minV) minV = v;
+      if (v > maxV) maxV = v;
+    }
+    final range = (maxV - minV) > 0.01 ? (maxV - minV) : 1.0;
+
     return [
       List.generate(
         70,
         (y) => List.generate(
           70,
           (x) {
-            final pixel = resized.getPixel(x, y);
-            return [pixel.r / 255.0];
+            final raw = pixels[y * 70 + x];
+            // Min-Max Normalisierung + Mean-Subtraction + Gamma
+            final normalized = ((raw - minV) / range).clamp(0.0, 1.0);
+            final gammaCorrected = gamma != 1.0
+                ? _gammaCorrect(normalized, gamma)
+                : normalized;
+            return [gammaCorrected];
           },
         ),
       )
     ];
+  }
+
+  /// Gamma-Korrektur: value^gamma
+  double _gammaCorrect(double value, double gamma) {
+    if (value <= 0.0) return 0.0;
+    if (value >= 1.0) return 1.0;
+    return value < 0.0031308
+        ? 12.92 * value
+        : (1.055 * (value == 0 ? 0 : _pow(value, gamma)) - 0.055).clamp(0.0, 1.0);
+  }
+
+  double _pow(double base, double exp) {
+    // dart:math pow als Inline ohne Import
+    if (exp == 1.0) return base;
+    if (exp == 0.5) return base > 0 ? 1.0 / (1.0 / base * (1.0 / base > 0 ? 1.0 : -1.0)) : 0.0;
+    // Simple Taylor-free power: e^(exp * ln(base))
+    // Nutze dart built-in via num
+    return (base as num).toDouble() == 0.0 ? 0.0 : _expLn(base, exp);
+  }
+
+  double _expLn(double base, double exp) {
+    // base^exp = e^(exp * ln(base))
+    // Approximation: x^0.5 ≈ sqrt, x^0.7 ≈ x^(7/10)
+    if (base <= 0) return 0.0;
+    // Nutze dart's built-in num.pow equivalent via loop-free formula
+    // For gamma values we use (0.5, 0.7, 1.0) – handle those precisely
+    if (exp == 0.5) {
+      // Newton's method sqrt
+      double s = base;
+      for (int i = 0; i < 8; i++) s = (s + base / s) / 2.0;
+      return s;
+    }
+    // Generic: iterative approach using x^n = e^(n*ln(x))
+    // ln(x) approximation
+    double ln = _lnApprox(base);
+    return _expApprox(exp * ln);
+  }
+
+  double _lnApprox(double x) {
+    // ln(x) = 2 * atanh((x-1)/(x+1)), series expansion
+    int k = 0;
+    double xr = x;
+    while (xr > 1.5) { xr /= 2.718281828; k++; }
+    while (xr < 0.5) { xr *= 2.718281828; k--; }
+    final t = (xr - 1) / (xr + 1);
+    double s = t, tt = t * t, term = t;
+    for (int i = 1; i <= 10; i++) {
+      term *= tt;
+      s += term / (2 * i + 1);
+    }
+    return 2 * s + k;
+  }
+
+  double _expApprox(double x) {
+    if (x > 20) return double.infinity;
+    if (x < -20) return 0.0;
+    int n = x.floor();
+    double r = x - n;
+    // e^r via Taylor
+    double er = 1 + r * (1 + r * (0.5 + r * (1/6.0 + r * (1/24.0 + r * (1/120.0)))));
+    // e^n
+    double en = 1.0;
+    double base = n >= 0 ? 2.718281828 : 1.0 / 2.718281828;
+    int absN = n.abs();
+    for (int i = 0; i < absN; i++) en *= base;
+    return en * er;
   }
 
   void dispose() => _interpreter?.close();
@@ -1090,6 +1203,13 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
   double _minZoom = 1.0;
   static const int kConfirmFrames = 4;
 
+  // FIX 1: Top-3 Kandidaten
+  List<({String label, double score})> _topCandidates = [];
+
+  // FIX 3: Auto-Zoom Counter
+  int _noDetectFrames = 0;
+  static const int kAutoZoomFrames = 10;
+
   @override
   void initState() {
     super.initState();
@@ -1144,6 +1264,8 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
       _detected = [];
       _lastLabel = null;
       _confirmCount = 0;
+      _topCandidates = [];
+      _noDetectFrames = 0;
     });
     _cam!.startImageStream(_onFrame);
   }
@@ -1154,10 +1276,33 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
 
     final label = _ml.classify(image);
     if (label == null) {
-      if (mounted) setState(() => _status = 'Karte nicht erkannt - bessere Beleuchtung?');
+      // FIX 1: Top-3 Kandidaten anzeigen wenn nichts erkannt
+      final topK = _ml.classifyTopK(image, k: 3);
+
+      // FIX 3: Auto-Zoom bei dauerhaft fehlendem Confidence
+      _noDetectFrames++;
+      if (_noDetectFrames >= kAutoZoomFrames && _zoom < _maxZoom) {
+        final newZoom = (_zoom + 0.2).clamp(_minZoom, _maxZoom);
+        if (newZoom != _zoom) {
+          _zoom = newZoom;
+          _cam?.setZoomLevel(_zoom);
+        }
+        _noDetectFrames = 0; // Reset counter nach Zoom-Erhöhung
+      }
+
+      if (mounted) setState(() {
+        _status = 'Karte nicht erkannt - bessere Beleuchtung?';
+        _topCandidates = topK;
+      });
       _lastLabel = null;
       _confirmCount = 0;
       return;
+    }
+
+    // Karte erkannt → FIX 3: Zoom zurücksetzen & Kandidaten ausblenden
+    _noDetectFrames = 0;
+    if (mounted && _topCandidates.isNotEmpty) {
+      setState(() => _topCandidates = []);
     }
 
     if (label == _lastLabel) {
@@ -1173,6 +1318,12 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
       if (!already) {
         _detected.add(card);
         widget.onDetected(List.from(_detected));
+        // FIX 3: Zoom zurücksetzen nach erfolgreicher Erkennung
+        if (_zoom > _minZoom) {
+          _zoom = _minZoom;
+          _cam?.setZoomLevel(_zoom);
+          if (mounted) setState(() {});
+        }
         if (mounted) setState(() {
           _status = _detected.length < widget.maxCards ? 'Nächste Karte...' : 'Fertig!';
         });
@@ -1186,6 +1337,20 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
     }
   }
 
+  /// FIX 1: Manuell einen Top-K Kandidaten bestätigen
+  void _confirmCandidate(String label) {
+    final card = labelToCard(label);
+    final already = _detected.any((c) => c['r'] == card['r'] && c['s'] == card['s']);
+    if (!already && _detected.length < widget.maxCards) {
+      _detected.add(card);
+      widget.onDetected(List.from(_detected));
+    }
+    setState(() {
+      _topCandidates = [];
+      _status = _detected.length < widget.maxCards ? 'Nächste Karte...' : 'Fertig!';
+    });
+  }
+
   void _stopScan() {
     _cam?.stopImageStream();
     if (mounted) setState(() {
@@ -1196,7 +1361,12 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
 
   void _reset() {
     if (_scanning) _stopScan();
-    setState(() { _detected = []; _status = 'Bereit'; });
+    setState(() {
+      _detected = [];
+      _status = 'Bereit';
+      _topCandidates = [];
+      _noDetectFrames = 0;
+    });
     widget.onDetected([]);
   }
 
@@ -1251,6 +1421,61 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                             borderRadius: BorderRadius.circular(8),
                           ),
                         ),
+                        // FIX 1: Top-3 Kandidaten Overlay
+                        if (_topCandidates.isNotEmpty && _scanning)
+                          Positioned(
+                            top: 12,
+                            left: 12,
+                            right: 12,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.75),
+                                borderRadius: BorderRadius.circular(12),
+                                border: Border.all(color: Colors.orange.shade700, width: 1),
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                mainAxisSize: MainAxisSize.min,
+                                children: [
+                                  const Text('Kandidaten – antippen zum Bestätigen:',
+                                      style: TextStyle(color: Colors.orange, fontSize: 10)),
+                                  const SizedBox(height: 6),
+                                  Wrap(
+                                    spacing: 8,
+                                    runSpacing: 6,
+                                    children: _topCandidates.map((c) {
+                                      final card = labelToCard(c.label);
+                                      final isRed = card['s'] == '♥' || card['s'] == '♦';
+                                      final pct = (c.score * 100).toStringAsFixed(0);
+                                      return GestureDetector(
+                                        onTap: () => _confirmCandidate(c.label),
+                                        child: Container(
+                                          padding: const EdgeInsets.symmetric(
+                                              horizontal: 10, vertical: 6),
+                                          decoration: BoxDecoration(
+                                            color: Colors.white.withOpacity(0.92),
+                                            borderRadius: BorderRadius.circular(8),
+                                            border: Border.all(
+                                                color: isRed ? Colors.red : Colors.black87,
+                                                width: 1.5),
+                                          ),
+                                          child: Text(
+                                            '${card['r']}${card['s']} $pct%',
+                                            style: TextStyle(
+                                              fontSize: 14,
+                                              fontWeight: FontWeight.bold,
+                                              color: isRed ? Colors.red : Colors.black87,
+                                            ),
+                                          ),
+                                        ),
+                                      );
+                                    }).toList(),
+                                  ),
+                                ],
+                              ),
+                            ),
+                          ),
                         Positioned(
                           bottom: 12,
                           child: Container(
