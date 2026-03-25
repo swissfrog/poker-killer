@@ -85,10 +85,24 @@ rewards_history = []
 
 with Logger(LOG_DIR) as logger:
     for step in range(TRAIN_STEPS):
-        # Spiel spielen um Erfahrungen zu sammeln
+        # Spiel spielen und Erfahrungen sammeln
         trajectories, _ = env.run(is_training=True)
-        for ts in trajectories[0]:
-            agent.feed(ts)
+        # trajectories[0] = Erfahrungen von Spieler 0 (unser Agent)
+        # Format: Liste von (state, action, reward, next_state, done) Tuples
+        for i in range(0, len(trajectories[0]) - 2, 3):
+            state      = trajectories[0][i]
+            action     = trajectories[0][i + 1]
+            reward     = trajectories[0][i + 2]
+            next_state = trajectories[0][i + 3] if i + 3 < len(trajectories[0]) else state
+            done       = (i + 3 >= len(trajectories[0]))
+            agent.feed_memory(
+                state['obs'],
+                action,
+                reward,
+                next_state['obs'],
+                list(next_state['legal_actions'].keys()),
+                done,
+            )
 
         # Erst trainieren wenn genug Daten im Buffer
         if step >= 100:
