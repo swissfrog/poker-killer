@@ -8,6 +8,7 @@ import 'hand_evaluator.dart';
 import 'preflop_ranges.dart';
 import 'opponent_tracker.dart';
 import 'draw_analyzer.dart';
+import 'bet_sizer.dart';
 
 // ─── Farben ───────────────────────────────────────────────────────────────────
 class AC {
@@ -274,6 +275,7 @@ class _RPState extends State<RP> {
   double _equity = 0;
   String _handName = '';
   String _oppType = '';
+  BetSizing? _betSizing;
   final ps = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
   final PokerBrain _brain = PokerBrain();
   bool _brainReady = false;
@@ -376,10 +378,35 @@ class _RPState extends State<RP> {
         ? HandEvaluator.categoryName(hr)
         : '';
 
+    // Bet-Sizing berechnen
+    final draws = DrawAnalyzer.findDraws(
+      widget.M.cast<Map<String, String>>(),
+      widget.B.cast<Map<String, String>>(),
+    );
+    final hasFlushDraw = draws.any((d) => d.type == DrawType.flushDraw);
+    final hasOESD = draws.any((d) => d.type == DrawType.openEndedStraightDraw);
+    final hasDraw = draws.isNotEmpty;
+
+    final sizing = BetSizer.recommend(
+      equity: equity,
+      street: _street,
+      pot: pt,
+      stack: ss,
+      handCategory: hr,
+      boardWetness: _boardWetness(),
+      hasDraw: hasDraw,
+      hasFlushDraw: hasFlushDraw,
+      hasOESD: hasOESD,
+      position: p,
+      facingBet: tc > 0,
+      spr: pt > 0 ? ss / pt : 10.0,
+    );
+
     setState(() {
       r = action;
       _confidence = pfAdvice != null ? 1.0 : result.confidence;
       _scores = result.scores;
+      _betSizing = (action == 'RAISE' || action == 'ALL-IN') ? sizing : null;
     });
   }
 
@@ -492,6 +519,29 @@ class _RPState extends State<RP> {
                     ]);
                   }),
                 ),
+                if (_betSizing != null) ...[
+                  const SizedBox(height: 10),
+                  Container(
+                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
+                    decoration: BoxDecoration(
+                      color: Colors.black26,
+                      borderRadius: BorderRadius.circular(8),
+                    ),
+                    child: Column(children: [
+                      Text(
+                        '💰 ${_betSizing!.display}',
+                        style: const TextStyle(
+                            fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                      const SizedBox(height: 2),
+                      Text(
+                        _betSizing!.reason,
+                        style: const TextStyle(fontSize: 10, color: Colors.white70),
+                        textAlign: TextAlign.center,
+                      ),
+                    ]),
+                  ),
+                ],
               ]),
             ),
           const SizedBox(height: 20),
