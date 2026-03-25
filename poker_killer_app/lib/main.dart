@@ -182,39 +182,85 @@ class _RecommenderPageState extends State<RecommenderPage> {
     'Straight', 'Flush', 'Full House', 'Four of Kind', 'Straight Flush'
   ];
 
+  // ── Stack-Awareness Helper ──────────────────────────────────────────────
+  // Positionen: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
+  String _positionHint(int pos, double stackBb) {
+    const posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+    final posStr = pos < posNames.length ? posNames[pos] : 'MP';
+    String stackLabel;
+    if (stackBb < 20) {
+      stackLabel = '🔴 ${stackBb.toStringAsFixed(1)}bb (Short)';
+    } else if (stackBb <= 50) {
+      stackLabel = '🟡 ${stackBb.toStringAsFixed(1)}bb (Mid)';
+    } else {
+      stackLabel = '🟢 ${stackBb.toStringAsFixed(1)}bb (Deep)';
+    }
+    return '$posStr | $stackLabel';
+  }
+
+  // Big Blind Annahme: 2 (Standard Cash Game)
+  static const double _bigBlindSize = 2.0;
+
   void _getRecommendation() {
-    double score = (handRank / 8.0) * 0.6 + ((6 - position) / 6.0) * 0.3 + 0.1;
-    
-    // ICM Anpassung
-    if (stackSize < 20) score -= 0.2;
-    if (stackSize > 100) score += 0.1;
-    
+    // Stack in Big Blinds berechnen (Stack-Awareness)
+    final stackBb = stackSize / _bigBlindSize;
+
+    // Position-Awareness: Late Position (BTN=2, CO=3) gibt Bonus
+    // positions: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
+    final positionBonus = position <= 3 ? (3 - position) * 0.05 : 0.0; // BTN=+0.05, CO=+0.0, MP/UTG: 0
+    final positionPenalty = position >= 4 ? (position - 3) * 0.04 : 0.0; // MP=-0.04, UTG=-0.08
+
+    double score = (handRank / 8.0) * 0.6
+        + ((6 - position) / 6.0) * 0.3
+        + positionBonus
+        - positionPenalty
+        + 0.1;
+
+    // Stack-Awareness Anpassungen
+    if (stackBb < 10) {
+      // Extreme Short Stack: Push or Fold only
+      score -= 0.15;
+    } else if (stackBb < 20) {
+      // Short Stack: Push/Fold, reduzierte Bluff-Frequenz
+      score -= 0.10;
+    } else if (stackBb > 50) {
+      // Deep Stack: Implied Odds, mehr Flexibilität
+      score += 0.08;
+    }
+
     // Board Danger
     if (street > 0) {
       boardTexture = ['dry', 'wet', 'paired'][street % 3];
       boardDanger = street * 2 + 3;
       if (boardDanger > 7) score -= 0.15;
     }
-    
-    // Bluff Erkennung (GTO)
-    isBluff = handRank <= 2 && Random().nextDouble() < 0.25;
-    
+
+    // Bluff Erkennung (GTO) — kein Bluff bei Short Stack
+    isBluff = handRank <= 2 && stackBb > 20 && Random().nextDouble() < 0.25;
+
+    // Position-spezifische Hinweise für reason
+    final posHint = _positionHint(position, stackBb);
+
     setState(() {
       if (toCall > stackSize * 0.4) {
         recommendation = 'FOLD';
-        reason = 'Zu teuer';
+        reason = 'Zu teuer | $posHint';
+      } else if (stackBb < 15 && score > 0.55) {
+        // Short Stack Push/Fold Zone
+        recommendation = 'ALL-IN';
+        reason = '🔴 Push/Fold Zone ($posHint)';
       } else if (score > 0.75) {
-        recommendation = stackSize < 30 ? 'ALL-IN' : 'RAISE';
-        reason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand';
+        recommendation = stackBb < 20 ? 'ALL-IN' : 'RAISE';
+        reason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
       } else if (score > 0.5) {
         recommendation = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
-        reason = '🤖 Value';
+        reason = '🤖 Value | $posHint';
       } else if (score > 0.3) {
         recommendation = toCall < pot * 0.15 ? 'CALL' : 'CHECK';
-        reason = '🤖 Optional';
+        reason = '🤖 Optional | $posHint';
       } else {
         recommendation = 'CHECK';
-        reason = '🤖 Schwach';
+        reason = '🤖 Schwach | $posHint';
       }
     });
     
@@ -308,6 +354,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
             const SizedBox(height: 16),
             
             // Sliders & Dropdowns
+            // Stack & Position Info Badge
+            _buildStackPositionBadge(),
+            const SizedBox(height: 8),
             _buildDropdown('Position', position, positions, (v) => setState(() => position = v)),
             _buildDropdown('Street', street, streets, (v) => setState(() => street = v)),
             _buildDropdown('Hand', handRank, handNames, (v) => setState(() => handRank = v)),
@@ -371,6 +420,71 @@ class _RecommenderPageState extends State<RecommenderPage> {
         side: BorderSide(color: color),
       ),
       child: Text(action),
+    );
+  }
+
+  Widget _buildStackPositionBadge() {
+    final stackBb = stackSize / _bigBlindSize;
+    final posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+    final posStr = position < posNames.length ? posNames[position] : 'MP';
+
+    // Stack Type
+    final Color stackColor;
+    final String stackLabel;
+    final String stackHint;
+    if (stackBb < 20) {
+      stackColor = const Color(0xFFFF4444);
+      stackLabel = '🔴 ${stackBb.toStringAsFixed(1)}bb';
+      stackHint = 'Short Stack → Push/Fold';
+    } else if (stackBb <= 50) {
+      stackColor = const Color(0xFFFFAA00);
+      stackLabel = '🟡 ${stackBb.toStringAsFixed(1)}bb';
+      stackHint = 'Mid Stack → Vorsichtig';
+    } else {
+      stackColor = AppConfig.primaryColor;
+      stackLabel = '🟢 ${stackBb.toStringAsFixed(1)}bb';
+      stackHint = 'Deep Stack → Implied Odds';
+    }
+
+    // Position Hint
+    final String posHint;
+    switch (posStr) {
+      case 'BTN': posHint = 'Weiteste Range, steal'; break;
+      case 'CO':  posHint = 'Breit öffnen'; break;
+      case 'MP':  posHint = 'Standard Range'; break;
+      case 'UTG': posHint = 'Nur Premium!'; break;
+      case 'SB':  posHint = 'Steal vs BB, OOP'; break;
+      case 'BB':  posHint = 'Defend mit Odds'; break;
+      default:    posHint = '';
+    }
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 10),
+      decoration: BoxDecoration(
+        color: AppConfig.panelColor,
+        borderRadius: BorderRadius.circular(12),
+        border: Border.all(color: Colors.grey.shade800),
+      ),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+            const Text('POSITION', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 2),
+            Text('🎯 $posStr',
+                style: const TextStyle(color: Colors.white, fontSize: 14, fontWeight: FontWeight.bold)),
+            Text(posHint, style: const TextStyle(color: Colors.grey, fontSize: 10)),
+          ]),
+          Container(width: 1, height: 40, color: Colors.grey.shade800),
+          Column(crossAxisAlignment: CrossAxisAlignment.end, children: [
+            const Text('STACK', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 2),
+            Text(stackLabel,
+                style: TextStyle(color: stackColor, fontSize: 14, fontWeight: FontWeight.bold)),
+            Text(stackHint, style: const TextStyle(color: Colors.grey, fontSize: 10)),
+          ]),
+        ],
+      ),
     );
   }
 
