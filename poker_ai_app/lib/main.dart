@@ -383,8 +383,8 @@ class _RPState extends State<RP> {
       widget.M.cast<Map<String, String>>(),
       widget.B.cast<Map<String, String>>(),
     );
-    final hasFlushDraw = draws.any((d) => d.type == DrawType.flushDraw);
-    final hasOESD = draws.any((d) => d.type == DrawType.openEndedStraightDraw);
+    final hasFlushDraw = draws.any((d) => d.name.toLowerCase().contains('flush'));
+    final hasOESD = draws.any((d) => d.name.toLowerCase().contains('oesd') || d.name.toLowerCase().contains('open-ended'));
     final hasDraw = draws.isNotEmpty;
 
     final sizing = BetSizer.recommend(
