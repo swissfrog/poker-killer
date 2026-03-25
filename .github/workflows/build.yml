@@ -2,29 +2,47 @@ name: Build APK
 
 on:
   push:
-    branches: [ master ]
+    branches: [ main, master ]
   workflow_dispatch:
 
 jobs:
   build:
     runs-on: ubuntu-latest
-    
+
     steps:
-    - uses: actions/checkout@v4
-    
-    - name: Setup Flutter
-      uses: subosito/flutter-action@v2
-      with:
-        flutter-version: '3.16.9'
-        channel: 'stable'
-    
-    - name: Get dependencies
-      run: |
-        cd poker_ai_app
-        flutter pub get
-    
-    - name: Build APK
-      run: |
-        cd poker_ai_app
-        flutter build apk --debug || echo "Build failed but continuing"
-        ls -la build/app/outputs/flutter-apk/ || true
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: stable
+
+      - name: Download TFLite Model
+        run: |
+          mkdir -p poker_ai_app/assets
+          wget -q "https://github.com/0xN1nja/Playing-Cards-Classification-TensorFlow-CNN/raw/master/64x3-cards.tflite" \
+            -O poker_ai_app/assets/64x3-cards.tflite
+          ls -lh poker_ai_app/assets/
+
+      - name: Flutter pub get
+        working-directory: poker_ai_app
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: poker_ai_app
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: otto-apk
+          path: poker_ai_app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30

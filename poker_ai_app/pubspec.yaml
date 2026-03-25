@@ -1,5 +1,5 @@
 name: poker_ai_app
-description: Otto Poker
+description: Otto - ML Poker Bot
 publish_to: 'none'
 version: 1.0.0+1
 
@@ -9,7 +9,10 @@ environment:
 dependencies:
   flutter:
     sdk: flutter
-  http: ^1.2.0
+  tflite_flutter: ^0.10.4
+  camera: ^0.10.5+9
+  image: ^4.1.7
+  permission_handler: ^11.3.1
 
 dev_dependencies:
   flutter_test:
@@ -18,3 +21,6 @@ dev_dependencies:
 
 flutter:
   uses-material-design: true
+  assets:
+    - assets/64x3-cards.tflite
+    - assets/poker_brain.tflite
