@@ -63,9 +63,15 @@ class PokerBrain {
 
   static const List<String> kActions = ['FOLD', 'CHECK', 'CALL', 'RAISE'];
 
-  Future<void> load() async {
-    _interpreter = await Interpreter.fromAsset('assets/poker_brain.tflite');
+  bool _useRlModel = false;
+
+  Future<void> load({bool useRl = false}) async {
+    _useRlModel = useRl;
+    final modelPath = useRl ? 'assets/poker_brain_rl.tflite' : 'assets/poker_brain.tflite';
+    _interpreter = await Interpreter.fromAsset(modelPath);
   }
+
+  String get modelName => _useRlModel ? 'RL Model (500k steps)' : 'Imitation v4';
 
   /// Gibt Aktion + Confidence zurück
   /// equity: 0.0-1.0 (Gewinnchance, aus Handstärke geschätzt)

@@ -24,3 +24,4 @@ flutter:
   assets:
     - assets/64x3-cards.tflite
     - assets/poker_brain.tflite
+    - assets/poker_brain_rl.tflite
