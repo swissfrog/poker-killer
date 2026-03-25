@@ -25,11 +25,13 @@ jobs:
           flutter-version: '3.24.0'
           channel: stable
 
-      - name: Download TFLite Model
+      - name: Download TFLite Models
         run: |
           mkdir -p poker_ai_app/assets
-          wget -q "https://github.com/0xN1nja/Playing-Cards-Classification-TensorFlow-CNN/raw/master/64x3-cards.tflite" \
+          wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/64x3-cards.tflite" \
             -O poker_ai_app/assets/64x3-cards.tflite
+          wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/poker_brain.tflite" \
+            -O poker_ai_app/assets/poker_brain.tflite
           ls -lh poker_ai_app/assets/
 
       - name: Flutter pub get
