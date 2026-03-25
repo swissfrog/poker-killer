@@ -86,15 +86,21 @@ rewards_history = []
 with Logger(LOG_DIR) as logger:
     for step in range(TRAIN_STEPS):
         # Spiel spielen und Erfahrungen sammeln
+        # RLCard trajectory format: [state, action, reward, state, action, reward, ..., state]
+        # d.h. abwechselnd: state (dict), action (int), reward (float), state (dict), ...
         trajectories, _ = env.run(is_training=True)
-        # trajectories[0] = Erfahrungen von Spieler 0 (unser Agent)
-        # Format: Liste von (state, action, reward, next_state, done) Tuples
-        for i in range(0, len(trajectories[0]) - 2, 3):
-            state      = trajectories[0][i]
-            action     = trajectories[0][i + 1]
-            reward     = trajectories[0][i + 2]
-            next_state = trajectories[0][i + 3] if i + 3 < len(trajectories[0]) else state
-            done       = (i + 3 >= len(trajectories[0]))
+        traj = trajectories[0]
+        i = 0
+        while i < len(traj) - 2:
+            state = traj[i]
+            if not isinstance(state, dict):
+                i += 1
+                continue
+            action = traj[i + 1]
+            reward = traj[i + 2]
+            # next_state ist entweder der nächste dict oder der letzte state
+            next_state = traj[i + 3] if (i + 3 < len(traj) and isinstance(traj[i + 3], dict)) else state
+            done = not (i + 3 < len(traj) and isinstance(traj[i + 3], dict))
             agent.feed_memory(
                 state['obs'],
                 action,
@@ -103,6 +109,7 @@ with Logger(LOG_DIR) as logger:
                 list(next_state['legal_actions'].keys()),
                 done,
             )
+            i += 3
 
         # Erst trainieren wenn genug Daten im Buffer
         if step >= 100:
