@@ -713,6 +713,190 @@ class _RPState extends State<RP> {
   }
 }
 
+// ─── Manuelle Karten-Eingabe ──────────────────────────────────────────────────
+class CardPicker extends StatefulWidget {
+  final int maxCards;
+  final List<Map<String, String>> selected;
+  final Function(List<Map<String, String>>) onChanged;
+  const CardPicker({required this.maxCards, required this.selected, required this.onChanged, super.key});
+  @override
+  State<CardPicker> createState() => _CardPickerState();
+}
+
+class _CardPickerState extends State<CardPicker> {
+  static const ranks = ['A','K','Q','J','10','9','8','7','6','5','4','3','2'];
+  static const suits = ['♠','♥','♦','♣'];
+  String _selRank = 'A';
+  String _selSuit = '♠';
+
+  bool _isSelected(String r, String s) =>
+      widget.selected.any((c) => c['r'] == r && c['s'] == s);
+
+  void _addCard() {
+    if (widget.selected.length >= widget.maxCards) return;
+    if (_isSelected(_selRank, _selSuit)) return;
+    final newList = List<Map<String, String>>.from(widget.selected)
+      ..add({'r': _selRank, 's': _selSuit, 'label': '$_selRank $_selSuit'});
+    widget.onChanged(newList);
+  }
+
+  void _removeCard(int i) {
+    final newList = List<Map<String, String>>.from(widget.selected)..removeAt(i);
+    widget.onChanged(newList);
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    final isRed = _selSuit == '♥' || _selSuit == '♦';
+    final alreadySelected = _isSelected(_selRank, _selSuit);
+    final isFull = widget.selected.length >= widget.maxCards;
+
+    return Padding(
+      padding: const EdgeInsets.all(16),
+      child: Column(children: [
+        // Gewählte Karten
+        Container(
+          width: double.infinity,
+          padding: const EdgeInsets.all(12),
+          decoration: BoxDecoration(color: AC.PN, borderRadius: BorderRadius.circular(12)),
+          child: Column(children: [
+            Text('KARTEN: ${widget.selected.length}/${widget.maxCards}',
+                style: const TextStyle(color: Colors.grey, fontSize: 12)),
+            const SizedBox(height: 8),
+            widget.selected.isEmpty
+                ? const Text('Noch keine Karten', style: TextStyle(color: Colors.grey))
+                : Wrap(
+                    spacing: 8, runSpacing: 8, alignment: WrapAlignment.center,
+                    children: widget.selected.asMap().entries.map((e) {
+                      final red = e.value['s'] == '♥' || e.value['s'] == '♦';
+                      return GestureDetector(
+                        onTap: () => _removeCard(e.key),
+                        child: Container(
+                          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 8),
+                          decoration: BoxDecoration(
+                            color: Colors.white,
+                            borderRadius: BorderRadius.circular(8),
+                            border: Border.all(color: red ? Colors.red : Colors.black, width: 2),
+                          ),
+                          child: Row(mainAxisSize: MainAxisSize.min, children: [
+                            Text('${e.value['r']}${e.value['s']}',
+                                style: TextStyle(fontSize: 24, fontWeight: FontWeight.bold,
+                                    color: red ? Colors.red : Colors.black)),
+                            const SizedBox(width: 4),
+                            const Icon(Icons.close, size: 14, color: Colors.grey),
+                          ]),
+                        ),
+                      );
+                    }).toList(),
+                  ),
+          ]),
+        ),
+        const SizedBox(height: 16),
+
+        // Rank Auswahl
+        const Text('RANG', style: TextStyle(color: Colors.grey, fontSize: 11)),
+        const SizedBox(height: 6),
+        Wrap(
+          spacing: 6, runSpacing: 6, alignment: WrapAlignment.center,
+          children: ranks.map((r) {
+            final sel = r == _selRank;
+            return GestureDetector(
+              onTap: () => setState(() => _selRank = r),
+              child: Container(
+                width: 44, height: 44,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: sel ? AC.P : AC.PN,
+                  borderRadius: BorderRadius.circular(8),
+                  border: Border.all(color: sel ? AC.P : Colors.grey.shade700),
+                ),
+                child: Text(r, style: TextStyle(
+                    fontSize: 16, fontWeight: FontWeight.bold,
+                    color: sel ? Colors.black : Colors.white)),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 14),
+
+        // Suit Auswahl
+        const Text('FARBE', style: TextStyle(color: Colors.grey, fontSize: 11)),
+        const SizedBox(height: 6),
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+          children: suits.map((s) {
+            final sel = s == _selSuit;
+            final red = s == '♥' || s == '♦';
+            return GestureDetector(
+              onTap: () => setState(() => _selSuit = s),
+              child: Container(
+                width: 64, height: 64,
+                alignment: Alignment.center,
+                decoration: BoxDecoration(
+                  color: sel ? (red ? Colors.red.shade700 : Colors.grey.shade800) : AC.PN,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(
+                      color: sel ? (red ? Colors.red : Colors.white) : Colors.grey.shade700,
+                      width: sel ? 2 : 1),
+                ),
+                child: Text(s, style: TextStyle(
+                    fontSize: 28, color: red ? Colors.red : Colors.white)),
+              ),
+            );
+          }).toList(),
+        ),
+        const SizedBox(height: 20),
+
+        // Preview + Add Button
+        Row(children: [
+          // Preview
+          Container(
+            width: 70, height: 90,
+            alignment: Alignment.center,
+            decoration: BoxDecoration(
+              color: Colors.white,
+              borderRadius: BorderRadius.circular(10),
+              border: Border.all(color: isRed ? Colors.red : Colors.black, width: 2),
+              boxShadow: [BoxShadow(color: Colors.black26, blurRadius: 4)],
+            ),
+            child: Text('$_selRank$_selSuit',
+                style: TextStyle(fontSize: 22, fontWeight: FontWeight.bold,
+                    color: isRed ? Colors.red : Colors.black)),
+          ),
+          const SizedBox(width: 12),
+          Expanded(
+            child: SizedBox(
+              height: 90,
+              child: ElevatedButton(
+                onPressed: (!isFull && !alreadySelected) ? _addCard : null,
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: AC.P,
+                  foregroundColor: Colors.black,
+                  disabledBackgroundColor: Colors.grey.shade800,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                ),
+                child: Text(
+                  isFull ? 'Voll' : alreadySelected ? 'Bereits gewählt' : '+ KARTE HINZUFÜGEN',
+                  style: const TextStyle(fontSize: 16, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+              ),
+            ),
+          ),
+        ]),
+        if (widget.selected.isNotEmpty) ...[
+          const SizedBox(height: 12),
+          TextButton.icon(
+            onPressed: () => widget.onChanged([]),
+            icon: const Icon(Icons.refresh, color: Colors.grey),
+            label: const Text('Alle löschen', style: TextStyle(color: Colors.grey)),
+          ),
+        ],
+      ]),
+    );
+  }
+}
+
 // ─── Scanner Screen (Kamera + ML) ────────────────────────────────────────────
 class SP extends StatefulWidget {
   final String t;
@@ -728,6 +912,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
   final CardClassifier _ml = CardClassifier();
   bool _scanning = false;
   bool _camReady = false;
+  bool _manualMode = false;
   String _status = 'Bereit';
   List<Map<String, String>> _detected = [];
   String? _lastLabel;
@@ -846,11 +1031,28 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
         appBar: AppBar(
           title: Text(widget.t),
           actions: [
+            IconButton(
+              icon: Icon(_manualMode ? Icons.camera_alt : Icons.edit),
+              tooltip: _manualMode ? 'Kamera' : 'Manuell',
+              onPressed: () {
+                if (_scanning) _stopScan();
+                setState(() => _manualMode = !_manualMode);
+              },
+            ),
             if (_detected.isNotEmpty)
               IconButton(icon: const Icon(Icons.refresh), onPressed: _reset),
           ],
         ),
-        body: Column(children: [
+        body: _manualMode
+            ? CardPicker(
+                maxCards: widget.maxCards,
+                selected: _detected,
+                onChanged: (cards) {
+                  setState(() => _detected = cards);
+                  widget.onDetected(cards);
+                },
+              )
+            : Column(children: [
           Expanded(
             flex: 3,
             child: Container(
@@ -959,6 +1161,6 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
             ]),
           ),
           const SizedBox(height: 16),
-        ]),
-      );
+        ]),  // Column Ende
+      );    // Scaffold Ende
 }
