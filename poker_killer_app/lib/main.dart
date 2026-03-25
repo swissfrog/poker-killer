@@ -2,6 +2,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
 import 'package:sensors_plus/sensors_plus.dart';
+import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 import 'dart:async';
 import 'opponent_model.dart';
@@ -29,15 +30,23 @@ void main() {
   runApp(const PokerKillerApp());
 }
 
-class PokerKillerApp extends StatelessWidget {
+class PokerKillerApp extends StatefulWidget {
   const PokerKillerApp({super.key});
+  @override
+  State<PokerKillerApp> createState() => _PokerKillerAppState();
+}
+
+class _PokerKillerAppState extends State<PokerKillerApp> {
+  ThemeMode _themeMode = ThemeMode.dark;
+  void toggleTheme() => setState(() => _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
 
   @override
   Widget build(BuildContext context) {
     return MaterialApp(
       title: AppConfig.appName,
       debugShowCheckedModeBanner: false,
-      theme: ThemeData.dark().copyWith(
+      themeMode: _themeMode,
+      darkTheme: ThemeData.dark().copyWith(
         scaffoldBackgroundColor: AppConfig.bgColor,
         primaryColor: AppConfig.primaryColor,
         colorScheme: ColorScheme.fromSwatch().copyWith(
@@ -52,6 +61,10 @@ class PokerKillerApp extends StatelessWidget {
           selectedItemColor: AppConfig.primaryColor,
           unselectedItemColor: Colors.grey,
         ),
+      ),
+      theme: ThemeData.light().copyWith(
+        primaryColor: AppConfig.primaryColor,
+        colorScheme: ColorScheme.fromSwatch().copyWith(secondary: AppConfig.primaryColor),
       ),
       home: const MainNavigator(),
     );
@@ -1292,8 +1305,14 @@ class _RecommenderPageState extends State<RecommenderPage> {
     );
   }
 
-  void _speak(String text) {
+  final FlutterTts _tts = FlutterTts();
+
+  Future<void> _speak(String text) async {
     HapticFeedback.mediumImpact();
+    if (!ttsEnabled) return;
+    await _tts.setLanguage('de-DE');
+    await _tts.setSpeechRate(0.9);
+    await _tts.speak(text);
   }
 
   @override
@@ -1327,6 +1346,14 @@ class _RecommenderPageState extends State<RecommenderPage> {
               context,
               MaterialPageRoute(builder: (_) => const HandHistoryScreen()),
             ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.brightness_6),
+            tooltip: 'Dark/Light Mode',
+            onPressed: () {
+              final app = context.findAncestorStateOfType<_PokerKillerAppState>();
+              app?.toggleTheme();
+            },
           ),
           IconButton(
             icon: Icon(ttsEnabled ? Icons.volume_up : Icons.volume_off),
