@@ -121,7 +121,7 @@ with Logger(LOG_DIR) as logger:
             avg_reward = rewards[0] if hasattr(rewards, '__len__') else float(rewards)
             rewards_history.append(avg_reward)
 
-            print(f"  Step {step:>8,} | Reward: {avg_reward:+.4f} | Epsilon: {agent.epsilon:.3f}")
+            print(f"  Step {step:>8,} | Reward: {avg_reward:+.4f} | Epsilon: {agent.epsilons[0]:.3f}")
             logger.log_performance(step, avg_reward)
 
             # Bestes Modell speichern
