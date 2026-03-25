@@ -140,7 +140,7 @@ class _MainNavigatorState extends State<MainNavigator> {
         onTap: (index) => setState(() => _selectedIndex = index),
         type: BottomNavigationBarType.fixed,
         items: [
-          BottomNavigationBarItem(icon: const Icon(Icons.poker_chip), label: AppConfig.t('recommendation')),
+          BottomNavigationBarItem(icon: const Icon(Icons.casino), label: AppConfig.t('recommendation')),
           BottomNavigationBarItem(icon: const Icon(Icons.camera_alt), label: AppConfig.t('camera')),
           BottomNavigationBarItem(icon: const Icon(Icons.emoji_events), label: AppConfig.t('tournament')),
           BottomNavigationBarItem(icon: const Icon(Icons.bar_chart), label: AppConfig.t('stats')),
@@ -174,6 +174,14 @@ class _RecommenderPageState extends State<RecommenderPage> {
   int boardDanger = 0;
   bool isBluff = false;
   bool ttsEnabled = true;
+
+  // Action-Wahrscheinlichkeiten (0.0–1.0)
+  double _foldPct = 0;
+  double _callPct = 0;
+  double _raisePct = 0;
+  // Bet-Sizing
+  String _betDisplay = '';
+  String _betReason = '';
 
   final List<String> positions = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
   final List<String> streets = ['Preflop', 'Flop', 'Turn', 'River'];
@@ -241,27 +249,89 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // Position-spezifische Hinweise für reason
     final posHint = _positionHint(position, stackBb);
 
-    setState(() {
-      if (toCall > stackSize * 0.4) {
-        recommendation = 'FOLD';
-        reason = 'Zu teuer | $posHint';
-      } else if (stackBb < 15 && score > 0.55) {
-        // Short Stack Push/Fold Zone
-        recommendation = 'ALL-IN';
-        reason = '🔴 Push/Fold Zone ($posHint)';
-      } else if (score > 0.75) {
-        recommendation = stackBb < 20 ? 'ALL-IN' : 'RAISE';
-        reason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
-      } else if (score > 0.5) {
-        recommendation = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
-        reason = '🤖 Value | $posHint';
-      } else if (score > 0.3) {
-        recommendation = toCall < pot * 0.15 ? 'CALL' : 'CHECK';
-        reason = '🤖 Optional | $posHint';
+    // ── Aktion bestimmen ─────────────────────────────────────────────────
+    String newRec;
+    String newReason;
+    if (toCall > stackSize * 0.4) {
+      newRec = 'FOLD';
+      newReason = 'Zu teuer | $posHint';
+    } else if (stackBb < 15 && score > 0.55) {
+      newRec = 'ALL-IN';
+      newReason = '🔴 Push/Fold Zone ($posHint)';
+    } else if (score > 0.75) {
+      newRec = stackBb < 20 ? 'ALL-IN' : 'RAISE';
+      newReason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
+    } else if (score > 0.5) {
+      newRec = toCall > pot * 0.3 ? 'FOLD' : 'CALL';
+      newReason = '🤖 Value | $posHint';
+    } else if (score > 0.3) {
+      newRec = toCall < pot * 0.15 ? 'CALL' : 'CHECK';
+      newReason = '🤖 Optional | $posHint';
+    } else {
+      newRec = 'CHECK';
+      newReason = '🤖 Schwach | $posHint';
+    }
+
+    // ── GTO Wahrscheinlichkeiten aus Score berechnen ──────────────────────
+    // score ∈ ~[0, 1]: niedriger = Fold, mittel = Call, hoch = Raise
+    final double rawFold  = (1.0 - score).clamp(0.0, 1.0);
+    final double rawRaise = score.clamp(0.0, 1.0);
+    // Call-Anteil: am größten in der Mitte (bell-shaped)
+    final double rawCall  = (1.0 - (score - 0.5).abs() * 2).clamp(0.0, 1.0);
+    final double total = rawFold + rawCall + rawRaise;
+    final double nFold  = total > 0 ? rawFold  / total : 0.33;
+    final double nCall  = total > 0 ? rawCall  / total : 0.34;
+    final double nRaise = total > 0 ? rawRaise / total : 0.33;
+
+    // ── Bet-Sizing berechnen (GTO: 33/50/66/Pot) ─────────────────────────
+    String betDisplay = '';
+    String betReason  = '';
+    if (newRec == 'RAISE' || newRec == 'ALL-IN') {
+      double fraction;
+      String fracLabel;
+      String sizingReason;
+
+      if (newRec == 'ALL-IN') {
+        fraction = stackSize;
+        fracLabel = 'All-In';
+        sizingReason = 'Push/Fold Zone → All-In';
+      } else if (street == 0) {
+        // Preflop Open-Raise
+        final isPosition = position >= 2;
+        fraction = isPosition ? pot * 2.5 : pot * 3.0;
+        fracLabel = isPosition ? '2.5x' : '3x';
+        sizingReason = isPosition ? 'Open-Raise in Position (2.5x)' : 'Open-Raise OOP (3x)';
+      } else if (score > 0.80) {
+        fraction = pot * 0.75;
+        fracLabel = '75% Pot';
+        sizingReason = 'Starke Hand → 75% für Value';
+      } else if (score > 0.65) {
+        fraction = pot * 0.66;
+        fracLabel = '66% Pot';
+        sizingReason = 'Gute Hand → 66% Pot';
+      } else if (score > 0.50) {
+        fraction = pot * 0.50;
+        fracLabel = '50% Pot';
+        sizingReason = 'Standard Bet → 50% Pot';
       } else {
-        recommendation = 'CHECK';
-        reason = '🤖 Schwach | $posHint';
+        fraction = pot * 0.33;
+        fracLabel = '33% Pot';
+        sizingReason = 'C-Bet / Probe → 33% Pot';
       }
+      final betAmt = (newRec == 'ALL-IN') ? stackSize : fraction.clamp(0.0, stackSize);
+      final betBb  = betAmt / _bigBlindSize;
+      betDisplay   = '\$${betAmt.toStringAsFixed(0)}  (${betBb.toStringAsFixed(1)} BB · $fracLabel)';
+      betReason    = sizingReason;
+    }
+
+    setState(() {
+      recommendation = newRec;
+      reason = newReason;
+      _foldPct  = nFold;
+      _callPct  = nCall;
+      _raisePct = nRaise;
+      _betDisplay = betDisplay;
+      _betReason  = betReason;
     });
     
     // TTS
@@ -299,10 +369,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
         child: Column(
           crossAxisAlignment: CrossAxisAlignment.stretch,
           children: [
-            // Empfehlung
-            if (recommendation.isNotEmpty)
+            // Empfehlung Haupt-Box
+            if (recommendation.isNotEmpty) ...[
               Container(
-                padding: const EdgeInsets.all(24),
+                padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
                 decoration: BoxDecoration(
                   gradient: LinearGradient(
                     colors: recommendation == 'ALL-IN' 
@@ -330,15 +400,73 @@ class _RecommenderPageState extends State<RecommenderPage> {
                       mainAxisAlignment: MainAxisAlignment.center,
                       children: [
                         if (isBluff) const Text('🎭 ', style: TextStyle(fontSize: 20)),
-                        Text(reason,
-                          style: const TextStyle(fontSize: 14, color: Colors.black87)),
+                        Flexible(child: Text(reason,
+                          style: const TextStyle(fontSize: 13, color: Colors.black87),
+                          textAlign: TextAlign.center)),
                       ],
                     ),
                   ],
                 ),
               ),
+              const SizedBox(height: 10),
+              // ── Action-Wahrscheinlichkeiten (farbige Balken) ──────────────
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AppConfig.panelColor,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade800),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('WAHRSCHEINLICHKEITEN',
+                        style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+                    const SizedBox(height: 10),
+                    _buildActionBar('FOLD',        _foldPct,  Colors.red.shade600),
+                    _buildActionBar('CHECK / CALL', _callPct,  Colors.green.shade600),
+                    _buildActionBar('RAISE',        _raisePct, Colors.blue.shade500),
+                  ],
+                ),
+              ),
+              // ── Empfohlener Bet-Betrag ────────────────────────────────────
+              if (_betDisplay.isNotEmpty) ...[
+                const SizedBox(height: 8),
+                Container(
+                  padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                  decoration: BoxDecoration(
+                    color: Colors.blue.shade900.withOpacity(0.7),
+                    borderRadius: BorderRadius.circular(12),
+                    border: Border.all(color: Colors.blue.shade700),
+                  ),
+                  child: Column(children: [
+                    Row(
+                      mainAxisAlignment: MainAxisAlignment.center,
+                      children: [
+                        const Icon(Icons.attach_money, color: Colors.white, size: 20),
+                        const SizedBox(width: 4),
+                        Flexible(
+                          child: Text(
+                            _betDisplay,
+                            style: const TextStyle(
+                                fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
+                            textAlign: TextAlign.center,
+                          ),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      _betReason,
+                      style: const TextStyle(fontSize: 11, color: Colors.white70),
+                      textAlign: TextAlign.center,
+                    ),
+                  ]),
+                ),
+              ],
+            ],
             
-            const SizedBox(height: 20),
+            const SizedBox(height: 16),
             
             // Quick Actions
             if (recommendation.isNotEmpty)
@@ -408,6 +536,36 @@ class _RecommenderPageState extends State<RecommenderPage> {
           ],
         ),
       ),
+    );
+  }
+
+  Widget _buildActionBar(String label, double value, Color color) {
+    final pct = (value * 100).toStringAsFixed(0);
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+        Row(
+          mainAxisAlignment: MainAxisAlignment.spaceBetween,
+          children: [
+            Text(label,
+                style: TextStyle(
+                    color: color, fontSize: 12, fontWeight: FontWeight.bold)),
+            Text('$pct%',
+                style: TextStyle(
+                    color: color, fontSize: 13, fontWeight: FontWeight.bold)),
+          ],
+        ),
+        const SizedBox(height: 4),
+        ClipRRect(
+          borderRadius: BorderRadius.circular(4),
+          child: LinearProgressIndicator(
+            value: value.clamp(0.0, 1.0),
+            minHeight: 10,
+            backgroundColor: Colors.grey.shade800,
+            valueColor: AlwaysStoppedAnimation<Color>(color),
+          ),
+        ),
+      ]),
     );
   }
 

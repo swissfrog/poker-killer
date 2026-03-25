@@ -527,9 +527,10 @@ class _RPState extends State<RP> {
                 ],
               ]),
             ),
-          if (r.isNotEmpty)
+          if (r.isNotEmpty) ...[
+            // ── Empfehlung Haupt-Box ──────────────────────────────────────
             Container(
-              padding: const EdgeInsets.all(24),
+              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
               decoration: BoxDecoration(
                 gradient: LinearGradient(
                   colors: r == 'ALL-IN'
@@ -546,46 +547,64 @@ class _RPState extends State<RP> {
                 Text(r,
                     style: const TextStyle(
                         fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
-                const SizedBox(height: 4),
+                const SizedBox(height: 2),
                 Text('${(_confidence * 100).toStringAsFixed(0)}% Konfidenz',
                     style: const TextStyle(fontSize: 12, color: Colors.black45)),
-                const SizedBox(height: 8),
-                Row(
-                  mainAxisAlignment: MainAxisAlignment.spaceEvenly,
-                  children: List.generate(4, (i) {
-                    final labels = ['FOLD', 'CHK', 'CALL', 'RAISE'];
-                    final pct = (_scores.isNotEmpty ? _scores[i] * 100 : 0).toStringAsFixed(0);
-                    return Column(children: [
-                      Text(labels[i], style: const TextStyle(fontSize: 10, color: Colors.black38)),
-                      Text('$pct%', style: const TextStyle(fontSize: 11, color: Colors.black54, fontWeight: FontWeight.bold)),
-                    ]);
-                  }),
-                ),
-                if (_betSizing != null) ...[
-                  const SizedBox(height: 10),
-                  Container(
-                    padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
-                    decoration: BoxDecoration(
-                      color: Colors.black26,
-                      borderRadius: BorderRadius.circular(8),
-                    ),
-                    child: Column(children: [
-                      Text(
-                        '💰 ${_betSizing!.display}',
-                        style: const TextStyle(
-                            fontSize: 18, fontWeight: FontWeight.bold, color: Colors.white),
-                      ),
-                      const SizedBox(height: 2),
-                      Text(
-                        _betSizing!.reason,
-                        style: const TextStyle(fontSize: 10, color: Colors.white70),
-                        textAlign: TextAlign.center,
-                      ),
-                    ]),
-                  ),
-                ],
               ]),
             ),
+            const SizedBox(height: 10),
+            // ── Action-Wahrscheinlichkeiten als farbige Balken ────────────
+            if (_scores.isNotEmpty && _scores.any((s) => s > 0))
+              Container(
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: AC.PN,
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.grey.shade800),
+                ),
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    const Text('WAHRSCHEINLICHKEITEN',
+                        style: TextStyle(color: Colors.grey, fontSize: 11, letterSpacing: 1)),
+                    const SizedBox(height: 10),
+                    ..._buildActionBars(),
+                  ],
+                ),
+              ),
+            // ── Empfohlener Bet-Betrag ────────────────────────────────────
+            if (_betSizing != null && _betSizing!.amount > 0) ...[
+              const SizedBox(height: 8),
+              Container(
+                padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                decoration: BoxDecoration(
+                  color: Colors.blue.shade900.withOpacity(0.7),
+                  borderRadius: BorderRadius.circular(12),
+                  border: Border.all(color: Colors.blue.shade700),
+                ),
+                child: Column(children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.center,
+                    children: [
+                      const Icon(Icons.attach_money, color: Colors.white, size: 20),
+                      const SizedBox(width: 4),
+                      Text(
+                        _betDisplayWithBB(),
+                        style: const TextStyle(
+                            fontSize: 20, fontWeight: FontWeight.bold, color: Colors.white),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  Text(
+                    _betSizing!.reason,
+                    style: const TextStyle(fontSize: 11, color: Colors.white70),
+                    textAlign: TextAlign.center,
+                  ),
+                ]),
+              ),
+            ],
+          ],
           const SizedBox(height: 20),
           // ── Stack & Position Info Badge ─────────────────────────────────
           _stackPositionBadge(),
@@ -668,6 +687,57 @@ class _RPState extends State<RP> {
         ],
       ),
     );
+  }
+
+  // ── Hilfsmethode: Bet-Betrag mit BB-Angabe ──────────────────────────────
+  String _betDisplayWithBB() {
+    if (_betSizing == null) return '';
+    final amount = _betSizing!.amount;
+    final bbVal = bb > 0 ? amount / bb : 0.0;
+    return '\$${amount.toStringAsFixed(0)} (${bbVal.toStringAsFixed(1)} BB) · ${_betSizing!.fractionLabel}';
+  }
+
+  // ── Hilfsmethode: Farbige Action-Balken ─────────────────────────────────
+  List<Widget> _buildActionBars() {
+    final labels = ['FOLD', 'CHECK/CALL', 'RAISE'];
+    // Scores: [0]=FOLD, [1]=CHECK, [2]=CALL, [3]=RAISE
+    // Merge CHECK+CALL zu einem Balken
+    final foldPct = _scores.isNotEmpty ? _scores[0] : 0.0;
+    final callPct = _scores.length >= 3 ? (_scores[1] + _scores[2]) / 2.0 : 0.0;
+    final raisePct = _scores.length >= 4 ? _scores[3] : 0.0;
+    // Normalisieren
+    final total = foldPct + callPct + raisePct;
+    final norm = total > 0 ? 1.0 / total : 1.0;
+    final values = [foldPct * norm, callPct * norm, raisePct * norm];
+    final colors = [Colors.red.shade600, Colors.green.shade600, Colors.blue.shade600];
+
+    return List.generate(3, (i) {
+      final pct = (values[i] * 100).toStringAsFixed(0);
+      return Padding(
+        padding: const EdgeInsets.only(bottom: 8),
+        child: Column(crossAxisAlignment: CrossAxisAlignment.start, children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.spaceBetween,
+            children: [
+              Text(labels[i],
+                  style: TextStyle(color: colors[i], fontSize: 12, fontWeight: FontWeight.bold)),
+              Text('$pct%',
+                  style: TextStyle(color: colors[i], fontSize: 13, fontWeight: FontWeight.bold)),
+            ],
+          ),
+          const SizedBox(height: 4),
+          ClipRRect(
+            borderRadius: BorderRadius.circular(4),
+            child: LinearProgressIndicator(
+              value: values[i].clamp(0.0, 1.0),
+              minHeight: 10,
+              backgroundColor: Colors.grey.shade800,
+              valueColor: AlwaysStoppedAnimation<Color>(colors[i]),
+            ),
+          ),
+        ]),
+      );
+    });
   }
 
   Widget _cardRow(String title, List<Map<String, String>> cards) => Container(
