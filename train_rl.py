@@ -21,7 +21,7 @@ from rlcard.utils import set_seed, tournament, Logger
 # ── Config ────────────────────────────────────────────────────────────────────
 GAME        = 'no-limit-holdem'
 NUM_PLAYERS = 2
-TRAIN_STEPS = 500_000
+TRAIN_STEPS = 2_000_000
 EVAL_EVERY  = 10_000
 EVAL_GAMES  = 500
 SAVE_PATH   = './otto_model'
@@ -48,14 +48,14 @@ agent = DQNAgent(
     num_actions=action_dim,
     state_shape=state_dim,
     mlp_layers=[256, 256, 128],
-    learning_rate=5e-4,
+    learning_rate=2e-4,
     batch_size=BATCH_SIZE,
     replay_memory_size=20_000,
     replay_memory_init_size=BATCH_SIZE,  # nur batch_size nötig zum starten
     train_every=1,
     epsilon_start=1.0,
     epsilon_end=0.05,
-    epsilon_decay_steps=200_000,
+    epsilon_decay_steps=500_000,
 )
 
 rand_agent = RandomAgent(num_actions=action_dim)
