@@ -179,8 +179,8 @@ class CardClassifier {
         }
       }
 
-      // Mindest-Confidence 25%
-      if (maxVal < 0.25) return null;
+      // Mindest-Confidence 15% (gesenkt für bessere Erkennung)
+      if (maxVal < 0.15) return null;
       return kKaggleLabels[maxIdx];
     } catch (_) {
       return null;
@@ -1154,7 +1154,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
 
     final label = _ml.classify(image);
     if (label == null) {
-      if (mounted) setState(() => _status = 'NÃ¤her halten...');
+      if (mounted) setState(() => _status = 'Karte nicht erkannt - bessere Beleuchtung?');
       _lastLabel = null;
       _confirmCount = 0;
       return;
