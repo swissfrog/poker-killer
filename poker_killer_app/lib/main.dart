@@ -320,6 +320,25 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // ── VERBESSERUNG 5: Nash Push/Fold Check (höchste Priorität) ─────────
     final nashResult = _nashPushFoldCheck(stackBb, handRank);
 
+    // ── VERBESSERUNG 6: Pot Odds automatisch in Entscheidung einrechnen ──
+    String potOddsReason = '';
+    String? potOddsOverride;
+    if (toCall > 0 && pot + toCall > 0) {
+      final handEquity = handRank / 8.0;
+      final requiredEquity = toCall / (pot + toCall);
+      final requiredPct = (requiredEquity * 100).toStringAsFixed(0);
+      final hasPct = (handEquity * 100).toStringAsFixed(0);
+
+      if (handEquity < requiredEquity - 0.05) {
+        // Zu wenig Equity für diesen Call → FOLD erzwingen
+        potOddsOverride = 'FOLD';
+        potOddsReason = 'Pot Odds Override: FOLD (brauchst $requiredPct%, hast $hasPct%)';
+      } else if (handEquity > requiredEquity + 0.10) {
+        // Call/Raise bestätigt — kein Override, aber Info im Reason
+        potOddsReason = 'Pot Odds: Call profitable ($hasPct% > $requiredPct%)';
+      }
+    }
+
     // ── Aktion bestimmen ─────────────────────────────────────────────────
     String newRec;
     String newReason;
@@ -328,6 +347,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
       // Nash hat absolute Priorität bei Short-Stack Preflop
       newRec = nashResult.action;
       newReason = nashResult.reason;
+    } else if (potOddsOverride != null) {
+      // Pot Odds Override: FOLD erzwingen auch bei hohem Score
+      newRec = potOddsOverride;
+      newReason = potOddsReason;
     } else if (toCall > stackSize * 0.4) {
       newRec = 'FOLD';
       newReason = 'Zu teuer | $posHint';
@@ -343,6 +366,11 @@ class _RecommenderPageState extends State<RecommenderPage> {
     } else {
       newRec = 'CHECK';
       newReason = '🤖 Schwach | $posHint';
+    }
+
+    // Pot Odds Info an Reason anhängen (wenn kein Override, aber Info vorhanden)
+    if (potOddsReason.isNotEmpty && potOddsOverride == null) {
+      newReason = '$newReason | $potOddsReason';
     }
 
     // ── GTO Wahrscheinlichkeiten aus Score berechnen ──────────────────────
