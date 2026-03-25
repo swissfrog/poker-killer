@@ -1545,12 +1545,16 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
             const SizedBox(height: 12),
 
-            // Opponent Modeling
+            // Opponent Modeling (with animated Fish Detector + Bluff-O-Meter)
             OpponentModelWidget(
-              initialVpip: _vpip,
-              initialPfr:  _pfr,
+              initialVpip:   _vpip,
+              initialPfr:    _pfr,
               onVpipChanged: (v) => setState(() => _vpip = v),
               onPfrChanged:  (p) => setState(() => _pfr  = p),
+              isBluff:       isBluff,
+              score:         handEquityFromRank(handRank),
+              boardDanger:   _boardAnalysis.dangerScore,
+              street:        street,
             ),
 
             const SizedBox(height: 8),
