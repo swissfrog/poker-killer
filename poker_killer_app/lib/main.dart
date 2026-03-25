@@ -1,6 +1,10 @@
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'dart:math';
+import 'opponent_model.dart';
+import 'pot_odds.dart';
+import 'hand_history.dart';
+import 'preflop_chart.dart';
 
 void main() {
   runApp(const PokerKillerApp());
@@ -167,6 +171,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
   double pot = 100;
   double toCall = 20;
   double stackSize = 200;
+
+  // Opponent Modeling
+  double _vpip = 25;
+  double _pfr  = 18;
   
   String recommendation = '';
   String reason = '';
@@ -213,6 +221,9 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // Stack in Big Blinds berechnen (Stack-Awareness)
     final stackBb = stackSize / _bigBlindSize;
 
+    // Opponent Modeling: Score-Modifier
+    final oppMod = opponentScoreModifier(vpip: _vpip, pfr: _pfr, handScore: handRank / 8.0);
+
     // Position-Awareness: Late Position (BTN=2, CO=3) gibt Bonus
     // positions: 0=BB, 1=SB, 2=BTN, 3=CO, 4=MP, 5=UTG
     final positionBonus = position <= 3 ? (3 - position) * 0.05 : 0.0; // BTN=+0.05, CO=+0.0, MP/UTG: 0
@@ -222,6 +233,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
         + ((6 - position) / 6.0) * 0.3
         + positionBonus
         - positionPenalty
+        + oppMod
         + 0.1;
 
     // Stack-Awareness Anpassungen
@@ -333,7 +345,19 @@ class _RecommenderPageState extends State<RecommenderPage> {
       _betDisplay = betDisplay;
       _betReason  = betReason;
     });
-    
+
+    // Hand History speichern
+    final posNames = ['BB', 'SB', 'BTN', 'CO', 'MP', 'UTG'];
+    final posStr = position < posNames.length ? posNames[position] : 'MP';
+    HandHistoryService.addRecord(HandRecord(
+      id:             DateTime.now().millisecondsSinceEpoch.toString(),
+      date:           DateTime.now(),
+      hand:           handNames[handRank],
+      position:       posStr,
+      stack:          stackSize / _bigBlindSize,
+      recommendation: newRec,
+    ));
+
     // TTS
     if (ttsEnabled && recommendation.isNotEmpty) {
       _speak(recommendation);
@@ -358,6 +382,25 @@ class _RecommenderPageState extends State<RecommenderPage> {
         ),
         centerTitle: true,
         actions: [
+          IconButton(
+            icon: const Icon(Icons.style),
+            tooltip: 'Preflop Range Chart',
+            onPressed: () => showDialog(
+              context: context,
+              builder: (_) => Dialog(
+                backgroundColor: AppConfig.panelColor,
+                child: PreflopRangeChart(currentPosition: position),
+              ),
+            ),
+          ),
+          IconButton(
+            icon: const Icon(Icons.history),
+            tooltip: 'Hand History',
+            onPressed: () => Navigator.push(
+              context,
+              MaterialPageRoute(builder: (_) => const HandHistoryScreen()),
+            ),
+          ),
           IconButton(
             icon: Icon(ttsEnabled ? Icons.volume_up : Icons.volume_off),
             onPressed: () => setState(() => ttsEnabled = !ttsEnabled),
@@ -498,6 +541,22 @@ class _RecommenderPageState extends State<RecommenderPage> {
             if (street > 0)
               _buildBoardInfo(),
             
+            const SizedBox(height: 12),
+
+            // Opponent Modeling
+            OpponentModelWidget(
+              vpip: _vpip,
+              pfr:  _pfr,
+              onChanged: (v, p) => setState(() { _vpip = v; _pfr = p; }),
+            ),
+
+            const SizedBox(height: 8),
+
+            // Pot Odds
+            PotOddsWidget(
+              handEquityPercent: (handRank / 8.0) * 100,
+            ),
+
             const SizedBox(height: 20),
             
             // Button
