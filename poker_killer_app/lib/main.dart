@@ -155,6 +155,14 @@ class _MainNavigatorState extends State<MainNavigator> {
   }
 }
 
+// ===================== NASH PUSH/FOLD RESULT =====================
+
+class _NashResult {
+  final String action;
+  final String reason;
+  const _NashResult({required this.action, required this.reason});
+}
+
 // ===================== EMPFEHLUNGS-SEITE =====================
 
 class RecommenderPage extends StatefulWidget {
@@ -217,6 +225,57 @@ class _RecommenderPageState extends State<RecommenderPage> {
   // Big Blind Annahme: 2 (Standard Cash Game)
   static const double _bigBlindSize = 2.0;
 
+  // ── VERBESSERUNG 5: Nash Push/Fold Lookup-Tabellen ───────────────────────
+  // handRank: 0=High Card, 1=Pair, 2=Two Pair, 3=Three of Kind,
+  //           4=Straight, 5=Flush, 6=Full House, 7=Four of Kind, 8=Straight Flush
+  //
+  // Nash Push-Ranges (Lookup-Set der minimalen handRank-Schwelle pro BB-Zone):
+  //   Zone A: < 8bb  → Any Ace/Pair/KQ/KJ/QJ/T9s+ → rank≥0 (immer pushen)
+  //   Zone B: 8-13bb → A2+/22+/KQ/KJ → rank≥1 (Pair+)
+  //   Zone C: 13-20bb→ A8+/55+/AJs+/KQs → rank≥3 (Three of Kind+ approximiert)
+  //
+  // Calling-Range gegen Push bei <15bb: Top 15% = rank≥3
+
+  /// Prüft Push/Fold-Szenario (Preflop) und gibt Empfehlung zurück, sonst null.
+  _NashResult? _nashPushFoldCheck(double stackBb, int rank) {
+    if (street != 0) return null; // Nur Preflop
+
+    if (stackBb < 8) {
+      // Zone A: breiteste Range — immer pushen
+      if (rank >= 1) {
+        return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push <8bb: ${_rankName(rank)} → Push!');
+      }
+      return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push <8bb: Breiteste Range → Push!');
+    } else if (stackBb < 13) {
+      // Zone B: Pair+ pushen; gegen Push nur Top 15% callen
+      if (rank >= 1) {
+        return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 8-13bb: ${_rankName(rank)} → Push!');
+      }
+      if (toCall > 0 && rank < 3) {
+        return _NashResult(action: 'FOLD', reason: '🎯 Nash Fold vs Push: Brauchst Top 15% zum Callen');
+      }
+      return null;
+    } else if (stackBb < 20) {
+      // Zone C: Three of Kind+ pushen; gegen Push nur Top 15% callen
+      if (rank >= 3) {
+        return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 13-20bb: ${_rankName(rank)} → Push!');
+      }
+      if (toCall > 0 && rank < 3) {
+        return _NashResult(action: 'FOLD', reason: '🎯 Nash Fold vs Push: Brauchst Top 15% zum Callen');
+      }
+      return null;
+    }
+    return null;
+  }
+
+  String _rankName(int rank) {
+    const names = [
+      'High Card', 'Pair', 'Two Pair', 'Three of Kind',
+      'Straight', 'Flush', 'Full House', 'Four of Kind', 'Straight Flush'
+    ];
+    return rank < names.length ? names[rank] : 'Unknown';
+  }
+
   void _getRecommendation() {
     // Stack in Big Blinds berechnen (Stack-Awareness)
     final stackBb = stackSize / _bigBlindSize;
@@ -236,15 +295,12 @@ class _RecommenderPageState extends State<RecommenderPage> {
         + oppMod
         + 0.1;
 
-    // Stack-Awareness Anpassungen
+    // Stack-Awareness Anpassungen (Short Stack Penalty bleibt für score-basierte Logik)
     if (stackBb < 10) {
-      // Extreme Short Stack: Push or Fold only
       score -= 0.15;
     } else if (stackBb < 20) {
-      // Short Stack: Push/Fold, reduzierte Bluff-Frequenz
       score -= 0.10;
     } else if (stackBb > 50) {
-      // Deep Stack: Implied Odds, mehr Flexibilität
       score += 0.08;
     }
 
@@ -261,15 +317,20 @@ class _RecommenderPageState extends State<RecommenderPage> {
     // Position-spezifische Hinweise für reason
     final posHint = _positionHint(position, stackBb);
 
+    // ── VERBESSERUNG 5: Nash Push/Fold Check (höchste Priorität) ─────────
+    final nashResult = _nashPushFoldCheck(stackBb, handRank);
+
     // ── Aktion bestimmen ─────────────────────────────────────────────────
     String newRec;
     String newReason;
-    if (toCall > stackSize * 0.4) {
+
+    if (nashResult != null) {
+      // Nash hat absolute Priorität bei Short-Stack Preflop
+      newRec = nashResult.action;
+      newReason = nashResult.reason;
+    } else if (toCall > stackSize * 0.4) {
       newRec = 'FOLD';
       newReason = 'Zu teuer | $posHint';
-    } else if (stackBb < 15 && score > 0.55) {
-      newRec = 'ALL-IN';
-      newReason = '🔴 Push/Fold Zone ($posHint)';
     } else if (score > 0.75) {
       newRec = stackBb < 20 ? 'ALL-IN' : 'RAISE';
       newReason = isBluff ? '🤖 GTO Bluff' : '🤖 Starke Hand | $posHint';
@@ -389,7 +450,7 @@ class _RecommenderPageState extends State<RecommenderPage> {
               context: context,
               builder: (_) => Dialog(
                 backgroundColor: AppConfig.panelColor,
-                child: PreflopRangeChart(currentPosition: position),
+                child: PreflopChartScreen(initialPosition: position),
               ),
             ),
           ),
@@ -545,9 +606,10 @@ class _RecommenderPageState extends State<RecommenderPage> {
 
             // Opponent Modeling
             OpponentModelWidget(
-              vpip: _vpip,
-              pfr:  _pfr,
-              onChanged: (v, p) => setState(() { _vpip = v; _pfr = p; }),
+              initialVpip: _vpip,
+              initialPfr:  _pfr,
+              onVpipChanged: (v) => setState(() => _vpip = v),
+              onPfrChanged:  (p) => setState(() => _pfr  = p),
             ),
 
             const SizedBox(height: 8),
