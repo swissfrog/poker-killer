@@ -85,8 +85,14 @@ rewards_history = []
 
 with Logger(LOG_DIR) as logger:
     for step in range(TRAIN_STEPS):
-        # Einen Schritt trainieren
-        agent.train()
+        # Spiel spielen um Erfahrungen zu sammeln
+        trajectories, _ = env.run(is_training=True)
+        for ts in trajectories[0]:
+            agent.feed(ts)
+
+        # Erst trainieren wenn genug Daten im Buffer
+        if step >= 100:
+            agent.train()
 
         # Regelmäßige Evaluierung
         if step % EVAL_EVERY == 0:
