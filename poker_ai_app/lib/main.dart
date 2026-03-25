@@ -151,6 +151,15 @@ class PokerBrain {
 }
 
 // ─── ML Kartenscanner ─────────────────────────────────────────────────────────
+
+/// Ergebnis einer Zone-Klassifizierung
+class ZoneResult {
+  final String label;
+  final double score;
+  final String zoneName;
+  ZoneResult(this.label, this.score, this.zoneName);
+}
+
 class CardClassifier {
   Interpreter? _interpreter;
   bool get isLoaded => _interpreter != null;
@@ -163,38 +172,92 @@ class CardClassifier {
   String? classify(CameraImage cameraImage) {
     if (_interpreter == null) return null;
     try {
-      final input = _prepareInput(cameraImage);
-      final output = [List.filled(52, 0.0)];
-      _interpreter!.run(input, output);
-
-      final scores = output[0];
-      int maxIdx = 0;
-      double maxVal = scores[0];
-      for (int i = 1; i < scores.length; i++) {
-        if (scores[i] > maxVal) {
-          maxVal = scores[i];
-          maxIdx = i;
-        }
-      }
-
-      // Mindest-Confidence 15%
-      if (maxVal < 0.15) return null;
-      return kKaggleLabels[maxIdx];
+      final result = classifyBestZone(cameraImage);
+      if (result == null || result.score < 0.15) return null;
+      return result.label;
     } catch (_) {
       return null;
     }
   }
 
-  /// Gibt Top-3 Kandidaten mit Scores zurück (immer, auch bei niedrigem Confidence)
-  List<({String label, double score})> classifyTopK(CameraImage cameraImage, {int k = 3}) {
+  /// FIX 3: Testet 5 Zonen und gibt das beste Ergebnis zurück
+  ZoneResult? classifyBestZone(CameraImage cameraImage) {
+    if (_interpreter == null) return null;
+    try {
+      final srcW = cameraImage.width;
+      final srcH = cameraImage.height;
+
+      // 5 Zonen definieren: (centerX_ratio, centerY_ratio, name)
+      final zones = [
+        (0.5, 0.5, 'Mitte'),
+        (0.3, 0.3, 'Oben-Links'),
+        (0.7, 0.3, 'Oben-Rechts'),
+        (0.3, 0.7, 'Unten-Links'),
+        (0.7, 0.7, 'Unten-Rechts'),
+      ];
+
+      ZoneResult? best;
+      for (final zone in zones) {
+        final cx = (zone.$1 * srcW).round();
+        final cy = (zone.$2 * srcH).round();
+        final input = _prepareInputFromRegion(cameraImage, cx, cy);
+        final output = [List.filled(52, 0.0)];
+        _interpreter!.run(input, output);
+
+        final scores = output[0];
+        int maxIdx = 0;
+        double maxVal = scores[0];
+        for (int i = 1; i < scores.length; i++) {
+          if (scores[i] > maxVal) { maxVal = scores[i]; maxIdx = i; }
+        }
+
+        if (best == null || maxVal > best.score) {
+          best = ZoneResult(kKaggleLabels[maxIdx], maxVal, zone.$3);
+        }
+      }
+      return best;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  /// Gibt Top-3 Kandidaten mit Scores zurück (aus der besten Zone)
+  List<({String label, double score, String zone})> classifyTopK(CameraImage cameraImage, {int k = 3}) {
     if (_interpreter == null) return [];
     try {
-      final input = _prepareInput(cameraImage);
-      final output = [List.filled(52, 0.0)];
-      _interpreter!.run(input, output);
+      final srcW = cameraImage.width;
+      final srcH = cameraImage.height;
 
-      final scores = output[0];
-      final indexed = List.generate(scores.length, (i) => (label: kKaggleLabels[i], score: scores[i]));
+      final zones = [
+        (0.5, 0.5, 'Mitte'),
+        (0.3, 0.3, 'Oben-Links'),
+        (0.7, 0.3, 'Oben-Rechts'),
+        (0.3, 0.7, 'Unten-Links'),
+        (0.7, 0.7, 'Unten-Rechts'),
+      ];
+
+      // Alle Zonen auswerten, beste Zone finden
+      String bestZoneName = 'Mitte';
+      double bestZoneScore = 0.0;
+      List<double>? bestScores;
+
+      for (final zone in zones) {
+        final cx = (zone.$1 * srcW).round();
+        final cy = (zone.$2 * srcH).round();
+        final input = _prepareInputFromRegion(cameraImage, cx, cy);
+        final output = [List.filled(52, 0.0)];
+        _interpreter!.run(input, output);
+        final scores = output[0];
+        final maxVal = scores.reduce((a, b) => a > b ? a : b);
+        if (maxVal > bestZoneScore) {
+          bestZoneScore = maxVal;
+          bestScores = List<double>.from(scores);
+          bestZoneName = zone.$3;
+        }
+      }
+
+      if (bestScores == null) return [];
+      final indexed = List.generate(bestScores.length, (i) => (label: kKaggleLabels[i], score: bestScores![i], zone: bestZoneName));
       indexed.sort((a, b) => b.score.compareTo(a.score));
       return indexed.take(k).toList();
     } catch (_) {
@@ -202,50 +265,98 @@ class CardClassifier {
     }
   }
 
-  /// CameraImage → [1][70][70][1] float32 mit Bild-Vorverarbeitung
-  List prepareInput(CameraImage cameraImage) => _prepareInput(cameraImage);
+  /// Live-Confidence (höchster Score aus bester Zone, auch unter Threshold)
+  double liveConfidence(CameraImage cameraImage) {
+    final result = classifyBestZone(cameraImage);
+    return result?.score ?? 0.0;
+  }
 
-  List _prepareInput(CameraImage cameraImage) {
+  /// CameraImage → [1][70][70][1] float32 (aus Bildmitte, Legacy-Kompatibilität)
+  List prepareInput(CameraImage cameraImage) {
+    final cx = cameraImage.width ~/ 2;
+    final cy = cameraImage.height ~/ 2;
+    return _prepareInputFromRegion(cameraImage, cx, cy);
+  }
+
+  /// FIX 2: Bildvorverarbeitung aus einer bestimmten Region
+  List _prepareInputFromRegion(CameraImage cameraImage, int centerX, int centerY) {
     final yPlane = cameraImage.planes[0].bytes;
     final srcW = cameraImage.width;
     final srcH = cameraImage.height;
 
-    // Y-Kanal (Graustufen) direkt aus YUV420
-    final grayImg = img.Image(width: srcW, height: srcH);
-    for (int y = 0; y < srcH; y++) {
-      for (int x = 0; x < srcW; x++) {
-        final val = yPlane[y * srcW + x];
-        grayImg.setPixelRgb(x, y, val, val, val);
+    // Ausschnitt: 70% der kürzeren Seite als Quadrat um Zentrum
+    final cropSize = ((srcW < srcH ? srcW : srcH) * 0.7).round();
+    final halfCrop = cropSize ~/ 2;
+    final x0 = (centerX - halfCrop).clamp(0, srcW - cropSize);
+    final y0 = (centerY - halfCrop).clamp(0, srcH - cropSize);
+
+    // Graustufen-Bild aus YUV Y-Kanal
+    final grayImg = img.Image(width: cropSize, height: cropSize);
+    for (int y = 0; y < cropSize; y++) {
+      for (int x = 0; x < cropSize; x++) {
+        final srcX = x0 + x;
+        final srcY = y0 + y;
+        if (srcX < srcW && srcY < srcH) {
+          final val = yPlane[srcY * srcW + srcX];
+          grayImg.setPixelRgb(x, y, val, val, val);
+        }
       }
     }
     final resized = img.copyResize(grayImg, width: 70, height: 70);
 
-    // FIX 2: Bild-Vorverarbeitung ─────────────────────────────────────────
-    // Pixel-Werte sammeln für Mean-Subtraction und Gamma-Korrektur
-    double sum = 0.0;
+    // ── FIX 2: Fortgeschrittene Bildvorverarbeitung ────────────────────
+    // Schritt 1: Pixel-Werte sammeln
     final pixels = List.generate(70 * 70, (i) {
       final px = resized.getPixel(i % 70, i ~/ 70);
-      final v = px.r / 255.0;
-      sum += v;
-      return v;
+      return px.r / 255.0;
     });
-    final mean = sum / (70 * 70);
 
-    // Gamma-Korrektur: wenn Bild zu dunkel (mean < 0.4), aufhellen
-    // gamma < 1 → heller, gamma > 1 → dunkler
-    final double gamma = mean < 0.3
-        ? 0.5   // sehr dunkel → stark aufhellen
-        : mean < 0.4
-            ? 0.7 // dunkel → leicht aufhellen
-            : 1.0; // normal → keine Korrektur
+    // Schritt 2: Histogramm-Equalization (CLAHE-ähnlich, vereinfacht)
+    // Sortiere Pixel und berechne CDF für Contrast Enhancement
+    final sorted = List<double>.from(pixels)..sort();
+    final cdfMin = sorted.first;
+    final cdfMax = sorted.last;
+    final cdfRange = (cdfMax - cdfMin) > 0.01 ? (cdfMax - cdfMin) : 1.0;
 
-    // Kontrast-Normalisierung: Min-Max-Stretch auf [0,1]
-    double minV = 1.0, maxV = 0.0;
-    for (final v in pixels) {
-      if (v < minV) minV = v;
-      if (v > maxV) maxV = v;
+    // Schritt 3: Mittlere Helligkeit für Gamma-Entscheidung
+    double sum = 0.0;
+    for (final v in pixels) sum += v;
+    final mean = sum / pixels.length;
+
+    // Schritt 4: Gamma-Korrektur (aggressiver bei dunklen Bildern)
+    final double gamma = mean < 0.25
+        ? 0.4   // sehr dunkel → stark aufhellen
+        : mean < 0.35
+            ? 0.6 // dunkel → deutlich aufhellen
+            : mean < 0.45
+                ? 0.8 // leicht dunkel → leicht aufhellen
+                : 1.0; // normal
+
+    // Schritt 5: Unsharp-Mask Simulation (3x3 Mittelwert-Differenz)
+    final blurred = List<double>.filled(70 * 70, 0.0);
+    for (int y = 0; y < 70; y++) {
+      for (int x = 0; x < 70; x++) {
+        double acc = 0.0;
+        int cnt = 0;
+        for (int dy = -1; dy <= 1; dy++) {
+          for (int dx = -1; dx <= 1; dx++) {
+            final nx = x + dx;
+            final ny = y + dy;
+            if (nx >= 0 && nx < 70 && ny >= 0 && ny < 70) {
+              acc += pixels[ny * 70 + nx];
+              cnt++;
+            }
+          }
+        }
+        blurred[y * 70 + x] = acc / cnt;
+      }
     }
-    final range = (maxV - minV) > 0.01 ? (maxV - minV) : 1.0;
+
+    // Schritt 6: Weißabgleich-Korrektur (für gelbliche/bläuliche Beleuchtung)
+    // Da wir Graustufen arbeiten, simulieren wir durch Mittelwert-Verschiebung
+    // Ziel-Mittelwert für weiße Karten: ~0.85 (heller Hintergrund)
+    final targetMean = 0.80;
+    final whiteBalanceOffset = mean > 0.3 ? (targetMean - mean) * 0.3 : 0.0;
 
     return [
       List.generate(
@@ -253,12 +364,18 @@ class CardClassifier {
         (y) => List.generate(
           70,
           (x) {
-            final raw = pixels[y * 70 + x];
-            // Min-Max Normalisierung + Mean-Subtraction + Gamma
-            final normalized = ((raw - minV) / range).clamp(0.0, 1.0);
+            final idx = y * 70 + x;
+            final raw = pixels[idx];
+            // Histogram Equalization: Min-Max Stretch
+            final heq = ((raw - cdfMin) / cdfRange).clamp(0.0, 1.0);
+            // Unsharp Mask: Original + Faktor * (Original - Blur)
+            final sharpened = (heq + 0.4 * (heq - blurred[idx])).clamp(0.0, 1.0);
+            // Weißabgleich
+            final whiteBalanced = (sharpened + whiteBalanceOffset).clamp(0.0, 1.0);
+            // Gamma Korrektur
             final gammaCorrected = gamma != 1.0
-                ? _gammaCorrect(normalized, gamma)
-                : normalized;
+                ? _gammaCorrect(whiteBalanced, gamma)
+                : whiteBalanced;
             return [gammaCorrected];
           },
         ),
@@ -266,44 +383,27 @@ class CardClassifier {
     ];
   }
 
-  /// Gamma-Korrektur: value^gamma
+  /// Gamma-Korrektur: value^gamma (linearisiertes sRGB-ähnliches Mapping)
   double _gammaCorrect(double value, double gamma) {
     if (value <= 0.0) return 0.0;
     if (value >= 1.0) return 1.0;
-    return value < 0.0031308
-        ? 12.92 * value
-        : (1.055 * (value == 0 ? 0 : _pow(value, gamma)) - 0.055).clamp(0.0, 1.0);
+    return _powApprox(value, gamma).clamp(0.0, 1.0);
   }
 
-  double _pow(double base, double exp) {
-    // dart:math pow als Inline ohne Import
-    if (exp == 1.0) return base;
-    if (exp == 0.5) return base > 0 ? 1.0 / (1.0 / base * (1.0 / base > 0 ? 1.0 : -1.0)) : 0.0;
-    // Simple Taylor-free power: e^(exp * ln(base))
-    // Nutze dart built-in via num
-    return (base as num).toDouble() == 0.0 ? 0.0 : _expLn(base, exp);
-  }
-
-  double _expLn(double base, double exp) {
-    // base^exp = e^(exp * ln(base))
-    // Approximation: x^0.5 ≈ sqrt, x^0.7 ≈ x^(7/10)
+  double _powApprox(double base, double exp) {
     if (base <= 0) return 0.0;
-    // Nutze dart's built-in num.pow equivalent via loop-free formula
-    // For gamma values we use (0.5, 0.7, 1.0) – handle those precisely
+    if (exp == 1.0) return base;
     if (exp == 0.5) {
       // Newton's method sqrt
       double s = base;
       for (int i = 0; i < 8; i++) s = (s + base / s) / 2.0;
       return s;
     }
-    // Generic: iterative approach using x^n = e^(n*ln(x))
-    // ln(x) approximation
-    double ln = _lnApprox(base);
+    final ln = _lnApprox(base);
     return _expApprox(exp * ln);
   }
 
   double _lnApprox(double x) {
-    // ln(x) = 2 * atanh((x-1)/(x+1)), series expansion
     int k = 0;
     double xr = x;
     while (xr > 1.5) { xr /= 2.718281828; k++; }
@@ -322,9 +422,7 @@ class CardClassifier {
     if (x < -20) return 0.0;
     int n = x.floor();
     double r = x - n;
-    // e^r via Taylor
     double er = 1 + r * (1 + r * (0.5 + r * (1/6.0 + r * (1/24.0 + r * (1/120.0)))));
-    // e^n
     double en = 1.0;
     double base = n >= 0 ? 2.718281828 : 1.0 / 2.718281828;
     int absN = n.abs();
@@ -1203,12 +1301,25 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
   double _minZoom = 1.0;
   static const int kConfirmFrames = 4;
 
-  // FIX 1: Top-3 Kandidaten
-  List<({String label, double score})> _topCandidates = [];
+  // FIX 1: Top-3 Kandidaten (mit Zone-Info)
+  List<({String label, double score, String zone})> _topCandidates = [];
 
-  // FIX 3: Auto-Zoom Counter
+  // FIX 3: Auto-Zoom Counter + erkannte Zone
   int _noDetectFrames = 0;
+  String _detectedZone = '';
   static const int kAutoZoomFrames = 10;
+
+  // FIX 4: Live-Confidence
+  double _liveConfidence = 0.0;
+  bool _cardDetected = false;
+
+  // FIX 1 (Kamera): Torch-Status
+  bool _torchOn = false;
+  static const int kTorchFrames = 5; // Nach 5 Frames ohne Erkennung → Torch
+
+  // FIX 5: Edge-Detection Fallback
+  Map<String, String>? _edgeCard;
+  bool _showEdgeConfirm = false;
 
   @override
   void initState() {
@@ -1230,11 +1341,26 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
     }
     _cam = CameraController(
       _cameras.first,
-      ResolutionPreset.medium,
+      ResolutionPreset.high, // FIX 1: Höhere Auflösung für bessere Erkennung
       enableAudio: false,
       imageFormatGroup: ImageFormatGroup.yuv420,
     );
     await _cam!.initialize();
+
+    // FIX 1: Kamera-Einstellungen für weiße Karten optimieren
+    try {
+      await _cam!.setExposureMode(ExposureMode.auto);
+      await _cam!.setFocusMode(FocusMode.auto);
+      // Belichtung leicht anheben für weiße Karten auf dunklem Tisch
+      final minExposure = await _cam!.getMinExposureOffset();
+      final maxExposure = await _cam!.getMaxExposureOffset();
+      if (maxExposure > 0) {
+        await _cam!.setExposureOffset((maxExposure * 0.2).clamp(minExposure, maxExposure));
+      }
+    } catch (_) {
+      // Kamera unterstützt diese Einstellungen nicht → ignorieren
+    }
+
     _minZoom = await _cam!.getMinZoomLevel();
     _maxZoom = await _cam!.getMaxZoomLevel();
     _zoom = _minZoom;
@@ -1266,7 +1392,14 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
       _confirmCount = 0;
       _topCandidates = [];
       _noDetectFrames = 0;
+      _liveConfidence = 0.0;
+      _cardDetected = false;
+      _detectedZone = '';
+      _edgeCard = null;
+      _showEdgeConfirm = false;
     });
+    // FIX 1: Torch ausschalten zu Beginn
+    _setTorch(false);
     _cam!.startImageStream(_onFrame);
   }
 
@@ -1274,35 +1407,63 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
     if (!_scanning) return;
     if (_detected.length >= widget.maxCards) { _stopScan(); return; }
 
-    final label = _ml.classify(image);
-    if (label == null) {
-      // FIX 1: Top-3 Kandidaten anzeigen wenn nichts erkannt
-      final topK = _ml.classifyTopK(image, k: 3);
+    // FIX 3: Beste Zone klassifizieren
+    final zoneResult = _ml.classifyBestZone(image);
+    final rawConfidence = zoneResult?.score ?? 0.0;
 
-      // FIX 3: Auto-Zoom bei dauerhaft fehlendem Confidence
+    // FIX 5: Edge-Detection Fallback bei sehr niedrigem Confidence
+    if (rawConfidence < 0.30) {
       _noDetectFrames++;
+
+      // FIX 1: Torch nach kTorchFrames einschalten
+      if (_noDetectFrames >= kTorchFrames && !_torchOn) {
+        _setTorch(true);
+      }
+
+      // FIX 3: Auto-Zoom nach kAutoZoomFrames
       if (_noDetectFrames >= kAutoZoomFrames && _zoom < _maxZoom) {
         final newZoom = (_zoom + 0.2).clamp(_minZoom, _maxZoom);
         if (newZoom != _zoom) {
           _zoom = newZoom;
           _cam?.setZoomLevel(_zoom);
         }
-        _noDetectFrames = 0; // Reset counter nach Zoom-Erhöhung
+        _noDetectFrames = 0;
       }
 
+      // Top-K für manuelles Bestätigen
+      final topK = _ml.classifyTopK(image, k: 3);
+
+      // FIX 4: Tipp generieren
+      final tip = _scanTip(rawConfidence);
+
       if (mounted) setState(() {
-        _status = 'Karte nicht erkannt - bessere Beleuchtung?';
+        _liveConfidence = rawConfidence;
+        _cardDetected = false;
+        _status = tip;
         _topCandidates = topK;
+        _detectedZone = zoneResult?.zoneName ?? '';
       });
       _lastLabel = null;
       _confirmCount = 0;
       return;
     }
 
-    // Karte erkannt → FIX 3: Zoom zurücksetzen & Kandidaten ausblenden
+    // Confidence >= 30% → Karte erkannt
+    final label = zoneResult!.label;
     _noDetectFrames = 0;
-    if (mounted && _topCandidates.isNotEmpty) {
-      setState(() => _topCandidates = []);
+
+    // FIX 1: Torch wieder ausschalten wenn gut erkannt
+    if (_torchOn && rawConfidence > 0.5) {
+      _setTorch(false);
+    }
+
+    if (mounted) {
+      setState(() {
+        _liveConfidence = rawConfidence;
+        _cardDetected = rawConfidence >= 0.60;
+        _detectedZone = zoneResult.zoneName;
+        _topCandidates = rawConfidence < 0.60 ? _ml.classifyTopK(image, k: 3) : [];
+      });
     }
 
     if (label == _lastLabel) {
@@ -1318,14 +1479,17 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
       if (!already) {
         _detected.add(card);
         widget.onDetected(List.from(_detected));
-        // FIX 3: Zoom zurücksetzen nach erfolgreicher Erkennung
+        // Zoom zurücksetzen nach erfolgreicher Erkennung
         if (_zoom > _minZoom) {
           _zoom = _minZoom;
           _cam?.setZoomLevel(_zoom);
-          if (mounted) setState(() {});
         }
+        _setTorch(false);
         if (mounted) setState(() {
           _status = _detected.length < widget.maxCards ? 'Nächste Karte...' : 'Fertig!';
+          _liveConfidence = 0.0;
+          _cardDetected = false;
+          _detectedZone = '';
         });
       }
       _lastLabel = null;
@@ -1333,12 +1497,30 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
     } else {
       final card = labelToCard(label);
       if (mounted) setState(() =>
-          _status = '${card['r']}${card['s']} erkannt ($_confirmCount/$kConfirmFrames)');
+          _status = '${card['r']}${card['s']} – Zone: $_detectedZone ($_confirmCount/$kConfirmFrames)');
     }
   }
 
-  /// FIX 1: Manuell einen Top-K Kandidaten bestätigen
+  /// FIX 4: Scan-Tipp basierend auf Confidence
+  String _scanTip(double confidence) {
+    if (confidence < 0.05) return '💡 Mehr Licht – kaum was erkannt';
+    if (confidence < 0.15) return '📏 Karte näher halten';
+    if (confidence < 0.25) return '🎯 Karte zentrieren';
+    return '⏳ Karte stabilisieren...';
+  }
+
+  /// FIX 1 (Kamera): Torch an/aus
+  Future<void> _setTorch(bool on) async {
+    if (_torchOn == on) return;
+    try {
+      await _cam?.setFlashMode(on ? FlashMode.torch : FlashMode.off);
+      if (mounted) setState(() => _torchOn = on);
+    } catch (_) {}
+  }
+
+  /// Top-K Kandidaten manuell bestätigen
   void _confirmCandidate(String label) {
+    _setTorch(false);
     final card = labelToCard(label);
     final already = _detected.any((c) => c['r'] == card['r'] && c['s'] == card['s']);
     if (!already && _detected.length < widget.maxCards) {
@@ -1347,25 +1529,51 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
     }
     setState(() {
       _topCandidates = [];
+      _liveConfidence = 0.0;
+      _cardDetected = false;
+      _status = _detected.length < widget.maxCards ? 'Nächste Karte...' : 'Fertig!';
+    });
+  }
+
+  /// FIX 5: Edge-Detection Bestätigung (manuelle Rang/Farbe Auswahl)
+  void _confirmEdgeCard(String rank, String suit) {
+    final card = {'r': rank, 's': suit, 'label': '$rank $suit'};
+    final already = _detected.any((c) => c['r'] == rank && c['s'] == suit);
+    if (!already && _detected.length < widget.maxCards) {
+      _detected.add(card);
+      widget.onDetected(List.from(_detected));
+    }
+    setState(() {
+      _showEdgeConfirm = false;
+      _edgeCard = null;
       _status = _detected.length < widget.maxCards ? 'Nächste Karte...' : 'Fertig!';
     });
   }
 
   void _stopScan() {
     _cam?.stopImageStream();
+    _setTorch(false);
     if (mounted) setState(() {
       _scanning = false;
+      _liveConfidence = 0.0;
+      _cardDetected = false;
       _status = _detected.isNotEmpty ? 'Fertig!' : 'Gestoppt';
     });
   }
 
   void _reset() {
     if (_scanning) _stopScan();
+    _setTorch(false);
     setState(() {
       _detected = [];
       _status = 'Bereit';
       _topCandidates = [];
       _noDetectFrames = 0;
+      _liveConfidence = 0.0;
+      _cardDetected = false;
+      _detectedZone = '';
+      _edgeCard = null;
+      _showEdgeConfirm = false;
     });
     widget.onDetected([]);
   }
@@ -1375,6 +1583,14 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
         appBar: AppBar(
           title: Text(widget.t),
           actions: [
+            // FIX 1: Manueller Torch-Toggle
+            if (_camReady && _scanning)
+              IconButton(
+                icon: Icon(_torchOn ? Icons.flashlight_on : Icons.flashlight_off,
+                    color: _torchOn ? Colors.yellow : Colors.grey),
+                tooltip: _torchOn ? 'Taschenlampe aus' : 'Taschenlampe an',
+                onPressed: () => _setTorch(!_torchOn),
+              ),
             IconButton(
               icon: Icon(_manualMode ? Icons.camera_alt : Icons.edit),
               tooltip: _manualMode ? 'Kamera' : 'Manuell',
@@ -1397,6 +1613,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                 },
               )
             : Column(children: [
+          // ── Kamerabereich ───────────────────────────────────────────────
           Expanded(
             flex: 3,
             child: Container(
@@ -1404,25 +1621,66 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
               decoration: BoxDecoration(
                 color: Colors.black,
                 borderRadius: BorderRadius.circular(16),
-                border: Border.all(color: _scanning ? AC.P : Colors.grey, width: 2),
+                // FIX 4: Grüner Rahmen wenn erkannt, roter wenn nicht
+                border: Border.all(
+                  color: !_scanning
+                      ? Colors.grey
+                      : _cardDetected
+                          ? Colors.green
+                          : (_liveConfidence > 0.10 ? Colors.orange : Colors.red),
+                  width: _scanning ? 3 : 2,
+                ),
               ),
               child: ClipRRect(
                 borderRadius: BorderRadius.circular(14),
                 child: _camReady
                     ? Stack(alignment: Alignment.center, children: [
                         CameraPreview(_cam!),
-                        // Rahmen für Karte
+                        // Karten-Rahmen (grün/rot je nach Erkennung)
                         Container(
                           width: 110,
                           height: 155,
                           decoration: BoxDecoration(
                             border: Border.all(
-                                color: _scanning ? AC.P : Colors.white38, width: 2),
+                              color: !_scanning
+                                  ? Colors.white38
+                                  : _cardDetected
+                                      ? Colors.green
+                                      : (_liveConfidence > 0.10 ? Colors.orange : Colors.white38),
+                              width: 2,
+                            ),
                             borderRadius: BorderRadius.circular(8),
                           ),
                         ),
-                        // FIX 1: Top-3 Kandidaten Overlay
-                        if (_topCandidates.isNotEmpty && _scanning)
+                        // FIX 3: Zone-Anzeige
+                        if (_detectedZone.isNotEmpty && _scanning)
+                          Positioned(
+                            top: 8,
+                            right: 10,
+                            child: Container(
+                              padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 3),
+                              decoration: BoxDecoration(
+                                color: Colors.black.withOpacity(0.65),
+                                borderRadius: BorderRadius.circular(10),
+                              ),
+                              child: Text('📍 $_detectedZone',
+                                  style: const TextStyle(color: Colors.white70, fontSize: 10)),
+                            ),
+                          ),
+                        // Torch-Indikator
+                        if (_torchOn)
+                          const Positioned(
+                            top: 8,
+                            left: 10,
+                            child: Icon(Icons.flashlight_on, color: Colors.yellow, size: 20),
+                          ),
+                        // FIX 5: Edge-Detection Bestätigungs-Overlay
+                        if (_showEdgeConfirm && _scanning)
+                          Positioned.fill(
+                            child: _buildEdgeConfirmOverlay(),
+                          ),
+                        // Top-K Kandidaten Overlay (wenn unter Threshold)
+                        if (_topCandidates.isNotEmpty && _scanning && !_showEdgeConfirm)
                           Positioned(
                             top: 12,
                             left: 12,
@@ -1430,7 +1688,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                             child: Container(
                               padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 10),
                               decoration: BoxDecoration(
-                                color: Colors.black.withOpacity(0.75),
+                                color: Colors.black.withOpacity(0.80),
                                 borderRadius: BorderRadius.circular(12),
                                 border: Border.all(color: Colors.orange.shade700, width: 1),
                               ),
@@ -1472,21 +1730,43 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                                       );
                                     }).toList(),
                                   ),
+                                  // FIX 5: Button für manuelle Eingabe
+                                  const SizedBox(height: 6),
+                                  GestureDetector(
+                                    onTap: () => setState(() => _showEdgeConfirm = true),
+                                    child: Container(
+                                      width: double.infinity,
+                                      padding: const EdgeInsets.symmetric(vertical: 6),
+                                      decoration: BoxDecoration(
+                                        color: Colors.blueGrey.shade800,
+                                        borderRadius: BorderRadius.circular(8),
+                                      ),
+                                      child: const Text('✏️ Manuell Rang+Farbe eingeben',
+                                          textAlign: TextAlign.center,
+                                          style: TextStyle(color: Colors.white70, fontSize: 11)),
+                                    ),
+                                  ),
                                 ],
                               ),
                             ),
                           ),
+                        // Status-Label unten
                         Positioned(
                           bottom: 12,
+                          left: 12,
+                          right: 12,
                           child: Container(
                             padding: const EdgeInsets.symmetric(horizontal: 12, vertical: 6),
                             decoration: BoxDecoration(
                                 color: Colors.black54,
                                 borderRadius: BorderRadius.circular(20)),
                             child: Text(_status,
+                                textAlign: TextAlign.center,
                                 style: TextStyle(
-                                    color: _scanning ? AC.P : Colors.white70,
-                                    fontSize: 13)),
+                                    color: _cardDetected
+                                        ? Colors.green
+                                        : (_scanning ? AC.P : Colors.white70),
+                                    fontSize: 12)),
                           ),
                         ),
                       ])
@@ -1498,6 +1778,57 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
               ),
             ),
           ),
+          // ── FIX 4: Live-Confidence Fortschrittsbalken ───────────────────
+          if (_scanning)
+            Padding(
+              padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Row(
+                    mainAxisAlignment: MainAxisAlignment.spaceBetween,
+                    children: [
+                      Text(
+                        'Erkennungs-Confidence',
+                        style: TextStyle(
+                          color: _cardDetected ? Colors.green : Colors.grey,
+                          fontSize: 11,
+                        ),
+                      ),
+                      Text(
+                        '${(_liveConfidence * 100).toStringAsFixed(0)}%',
+                        style: TextStyle(
+                          color: _cardDetected
+                              ? Colors.green
+                              : _liveConfidence > 0.30
+                                  ? Colors.orange
+                                  : Colors.red,
+                          fontSize: 12,
+                          fontWeight: FontWeight.bold,
+                        ),
+                      ),
+                    ],
+                  ),
+                  const SizedBox(height: 4),
+                  ClipRRect(
+                    borderRadius: BorderRadius.circular(4),
+                    child: LinearProgressIndicator(
+                      value: _liveConfidence.clamp(0.0, 1.0),
+                      minHeight: 8,
+                      backgroundColor: Colors.grey.shade800,
+                      valueColor: AlwaysStoppedAnimation<Color>(
+                        _cardDetected
+                            ? Colors.green
+                            : _liveConfidence > 0.30
+                                ? Colors.orange
+                                : Colors.red,
+                      ),
+                    ),
+                  ),
+                ],
+              ),
+            ),
+          // ── Erkannte Karten ─────────────────────────────────────────────
           if (_detected.isNotEmpty)
             Container(
               margin: const EdgeInsets.symmetric(horizontal: 16),
@@ -1528,7 +1859,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
                 ),
               ]),
             ),
-          // Zoom Slider
+          // ── Zoom Slider ─────────────────────────────────────────────────
           if (_camReady && _maxZoom > _minZoom)
             Padding(
               padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 4),
@@ -1559,6 +1890,7 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
               ]),
             ),
           const SizedBox(height: 8),
+          // ── Scan / Stop Buttons ─────────────────────────────────────────
           Padding(
             padding: const EdgeInsets.symmetric(horizontal: 16),
             child: Row(children: [
@@ -1592,4 +1924,98 @@ class _SPState extends State<SP> with WidgetsBindingObserver {
           const SizedBox(height: 16),
         ]),  // Column Ende
       );    // Scaffold Ende
+
+  /// FIX 5: Edge-Detection Fallback Overlay (manuelle Rang+Farbe Bestätigung)
+  Widget _buildEdgeConfirmOverlay() {
+    const ranks = ['A','K','Q','J','10','9','8','7','6','5','4','3','2'];
+    const suits = ['♠','♥','♦','♣'];
+    String selRank = _edgeCard?['r'] ?? 'A';
+    String selSuit = _edgeCard?['s'] ?? '♠';
+
+    return StatefulBuilder(
+      builder: (ctx, setLocal) => Container(
+        color: Colors.black.withOpacity(0.92),
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          mainAxisAlignment: MainAxisAlignment.center,
+          children: [
+            const Text('KARTE MANUELL BESTÄTIGEN',
+                style: TextStyle(color: Colors.orange, fontSize: 13, fontWeight: FontWeight.bold)),
+            const SizedBox(height: 10),
+            // Rang-Auswahl
+            const Text('RANG', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 4),
+            Wrap(
+              spacing: 4, runSpacing: 4, alignment: WrapAlignment.center,
+              children: ranks.map((r) {
+                final sel = r == selRank;
+                return GestureDetector(
+                  onTap: () => setLocal(() { selRank = r; _edgeCard = {'r': r, 's': selSuit}; }),
+                  child: Container(
+                    width: 36, height: 36,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: sel ? AC.P : Colors.grey.shade800,
+                      borderRadius: BorderRadius.circular(6),
+                    ),
+                    child: Text(r, style: TextStyle(
+                        fontSize: 13, fontWeight: FontWeight.bold,
+                        color: sel ? Colors.black : Colors.white)),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 8),
+            // Farbe-Auswahl
+            const Text('FARBE', style: TextStyle(color: Colors.grey, fontSize: 10)),
+            const SizedBox(height: 4),
+            Row(
+              mainAxisAlignment: MainAxisAlignment.spaceEvenly,
+              children: suits.map((s) {
+                final sel = s == selSuit;
+                final red = s == '♥' || s == '♦';
+                return GestureDetector(
+                  onTap: () => setLocal(() { selSuit = s; _edgeCard = {'r': selRank, 's': s}; }),
+                  child: Container(
+                    width: 52, height: 52,
+                    alignment: Alignment.center,
+                    decoration: BoxDecoration(
+                      color: sel ? (red ? Colors.red.shade700 : Colors.grey.shade700) : Colors.grey.shade900,
+                      borderRadius: BorderRadius.circular(10),
+                      border: Border.all(color: sel ? Colors.white : Colors.grey.shade700, width: sel ? 2 : 1),
+                    ),
+                    child: Text(s, style: TextStyle(fontSize: 24, color: red ? Colors.red : Colors.white)),
+                  ),
+                );
+              }).toList(),
+            ),
+            const SizedBox(height: 12),
+            Row(children: [
+              Expanded(
+                child: ElevatedButton(
+                  onPressed: () => _confirmEdgeCard(selRank, selSuit),
+                  style: ElevatedButton.styleFrom(
+                    backgroundColor: Colors.green,
+                    foregroundColor: Colors.white,
+                    shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                  ),
+                  child: Text('✓ $selRank$selSuit bestätigen',
+                      style: const TextStyle(fontWeight: FontWeight.bold)),
+                ),
+              ),
+              const SizedBox(width: 8),
+              ElevatedButton(
+                onPressed: () => setState(() { _showEdgeConfirm = false; _edgeCard = null; }),
+                style: ElevatedButton.styleFrom(
+                  backgroundColor: Colors.grey.shade800,
+                  shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(8)),
+                ),
+                child: const Icon(Icons.close, color: Colors.white),
+              ),
+            ]),
+          ],
+        ),
+      ),
+    );
+  }
 }
