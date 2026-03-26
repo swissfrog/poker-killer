@@ -42,6 +42,10 @@ jobs:
         working-directory: poker_killer_app
         run: flutter pub get
 
+      - name: Regenerate Android host (v2 embedding)
+        working-directory: poker_killer_app
+        run: flutter create .
+
       - name: Build APK
         working-directory: poker_killer_app
         run: flutter build apk --release
