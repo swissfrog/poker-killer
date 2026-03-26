@@ -1,0 +1,50 @@
+name: Build APK
+
+on:
+  push:
+    branches: [ main, master ]
+  workflow_dispatch:
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Java
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: '17'
+
+      - name: Setup Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.24.0'
+          channel: stable
+
+      - name: Download TFLite Models
+        run: |
+          mkdir -p poker_ai_app/assets
+          wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/64x3-cards.tflite" \
+            -O poker_ai_app/assets/64x3-cards.tflite
+          wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/poker_brain.tflite" \
+            -O poker_ai_app/assets/poker_brain.tflite
+          ls -lh poker_ai_app/assets/
+
+      - name: Flutter pub get
+        working-directory: poker_ai_app
+        run: flutter pub get
+
+      - name: Build APK
+        working-directory: poker_ai_app
+        run: flutter build apk --release
+
+      - name: Upload APK
+        uses: actions/upload-artifact@v4
+        with:
+          name: otto-apk
+          path: poker_ai_app/build/app/outputs/flutter-apk/app-release.apk
+          retention-days: 30
