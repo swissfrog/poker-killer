@@ -1,13 +1,16 @@
 import 'dart:typed_data';
 import 'dart:math' as math;
 import 'dart:ui';
+import 'dart:async';
 import 'package:flutter/material.dart';
+import 'package:flutter/services.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
 import 'package:image/image.dart' as img;
 import 'package:permission_handler/permission_handler.dart';
 import 'package:flutter_tts/flutter_tts.dart';
 import 'package:shared_preferences/shared_preferences.dart';
+import 'package:sensors_plus/sensors_plus.dart';
 import 'hand_evaluator.dart';
 import 'preflop_ranges.dart';
 import 'opponent_tracker.dart';
@@ -497,18 +500,180 @@ class GlassPanel extends StatelessWidget {
   }
 }
 
-class OttoApp extends StatelessWidget {
+// ─── CardModel ────────────────────────────────────────────────────────────────
+class CardModel {
+  final String rank; // '2'-'9', 'T', 'J', 'Q', 'K', 'A'
+  final String suit; // '♠', '♥', '♦', '♣'
+
+  const CardModel({required this.rank, required this.suit});
+
+  String get display => '$rank$suit';
+
+  Color get suitColor =>
+      (suit == '♥' || suit == '♦') ? Colors.red : Colors.black;
+
+  int get rankValue {
+    const map = {
+      '2': 2, '3': 3, '4': 4, '5': 5, '6': 6, '7': 7,
+      '8': 8, '9': 9, 'T': 10, 'J': 11, 'Q': 12, 'K': 13, 'A': 14,
+    };
+    return map[rank] ?? 2;
+  }
+
+  @override
+  bool operator ==(Object other) =>
+      other is CardModel && other.rank == rank && other.suit == suit;
+
+  @override
+  int get hashCode => rank.hashCode ^ suit.hashCode;
+}
+
+// ─── BoardAnalysis ────────────────────────────────────────────────────────────
+class BoardAnalysis {
+  final String texture;
+  final bool flushDraw;
+  final bool straightDraw;
+  final bool paired;
+  final int dangerScore;
+  final String label;
+
+  const BoardAnalysis({
+    required this.texture,
+    required this.flushDraw,
+    required this.straightDraw,
+    required this.paired,
+    required this.dangerScore,
+    required this.label,
+  });
+}
+
+BoardAnalysis analyzeBoardTexture(List<CardModel> board) {
+  if (board.isEmpty) {
+    return const BoardAnalysis(
+      texture: 'unknown', flushDraw: false, straightDraw: false,
+      paired: false, dangerScore: 0, label: '—',
+    );
+  }
+  final suitCounts = <String, int>{};
+  for (final c in board) suitCounts[c.suit] = (suitCounts[c.suit] ?? 0) + 1;
+  final flushDraw = suitCounts.values.any((v) => v >= 2);
+  final rankCounts = <String, int>{};
+  for (final c in board) rankCounts[c.rank] = (rankCounts[c.rank] ?? 0) + 1;
+  final paired = rankCounts.values.any((v) => v >= 2);
+  final ranks = board.map((c) => c.rankValue).toSet().toList()..sort();
+  bool straightDraw = false;
+  if (ranks.length >= 3) {
+    for (int i = 0; i <= ranks.length - 3; i++) {
+      final window = ranks.sublist(i, i + 3);
+      if (window.last - window.first <= 4) { straightDraw = true; break; }
+    }
+  }
+  final String texture;
+  final String label;
+  int danger = 0;
+  if (paired) {
+    texture = 'paired'; label = '🔄 Paired Board'; danger = 5;
+  } else if (flushDraw && straightDraw) {
+    texture = 'wet'; label = '🌊 Wet Board'; danger = 8;
+  } else if (flushDraw || straightDraw) {
+    texture = 'wet'; label = '💧 Semi-Wet Board'; danger = 5;
+  } else {
+    texture = 'dry'; label = '🏜️ Dry Board'; danger = 2;
+  }
+  return BoardAnalysis(texture: texture, flushDraw: flushDraw,
+      straightDraw: straightDraw, paired: paired, dangerScore: danger, label: label);
+}
+
+// ─── DrawInfo ─────────────────────────────────────────────────────────────────
+class DrawInfo {
+  final String label;
+  final bool isMade;
+  const DrawInfo({required this.label, required this.isMade});
+}
+
+List<DrawInfo> detectDraws(List<CardModel> holeCards, List<CardModel> board) {
+  if (holeCards.isEmpty || board.isEmpty) return [];
+  final combined = [...holeCards, ...board];
+  final results = <DrawInfo>[];
+  final suitMap = <String, List<CardModel>>{};
+  for (final c in combined) suitMap.putIfAbsent(c.suit, () => []).add(c);
+  for (final entry in suitMap.entries) {
+    if (entry.value.length >= 5) {
+      results.add(const DrawInfo(label: 'Made Hand: Flush ♦♥♠♣', isMade: true));
+    } else if (entry.value.length == 4) {
+      results.add(const DrawInfo(label: 'Draw Detected: Flush Draw 🎨', isMade: false));
+    }
+  }
+  final rankVals = combined.map((c) => c.rankValue).toSet().toList()..sort();
+  if (rankVals.contains(14)) rankVals.insert(0, 1);
+  bool foundStraight = false;
+  int consecutiveMax = 0;
+  for (int i = 0; i < rankVals.length; i++) {
+    int streak = 1;
+    for (int j = i + 1; j < rankVals.length; j++) {
+      if (rankVals[j] == rankVals[j - 1] + 1) streak++; else break;
+    }
+    if (streak > consecutiveMax) consecutiveMax = streak;
+    if (streak >= 5 && !foundStraight) {
+      foundStraight = true;
+      results.add(const DrawInfo(label: 'Made Hand: Straight ✅', isMade: true));
+    }
+  }
+  if (!foundStraight && consecutiveMax == 4) {
+    results.add(const DrawInfo(label: 'Draw Detected: Open-Ended Straight Draw 📏', isMade: false));
+  } else if (!foundStraight && consecutiveMax == 3) {
+    results.add(const DrawInfo(label: 'Draw Detected: Gutshot 🎯', isMade: false));
+  }
+  final rankCount = <String, int>{};
+  for (final c in combined) rankCount[c.rank] = (rankCount[c.rank] ?? 0) + 1;
+  final pairs = rankCount.values.where((v) => v == 2).length;
+  final trips = rankCount.values.where((v) => v == 3).length;
+  final quads = rankCount.values.where((v) => v >= 4).length;
+  if (quads > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Four of a Kind 🎰', isMade: true));
+  } else if (trips > 0 && pairs > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Full House 🏠', isMade: true));
+  } else if (trips > 0) {
+    results.add(const DrawInfo(label: 'Made Hand: Three of a Kind ✅', isMade: true));
+  } else if (pairs >= 2) {
+    results.add(const DrawInfo(label: 'Made Hand: Two Pair ✅', isMade: true));
+  } else if (pairs == 1) {
+    results.add(const DrawInfo(label: 'Made Hand: One Pair ✅', isMade: true));
+  }
+  return results;
+}
+
+// ─── NashResult ───────────────────────────────────────────────────────────────
+class _NashResult {
+  final String action;
+  final String reason;
+  const _NashResult({required this.action, required this.reason});
+}
+
+// ─── OttoApp (StatefulWidget für Theme-Toggle) ────────────────────────────────
+class OttoApp extends StatefulWidget {
   const OttoApp({super.key});
   @override
-  Widget build(BuildContext context) => MaterialApp(
-        title: 'Otto',
-        debugShowCheckedModeBanner: false,
-        theme: ThemeData.dark().copyWith(
-          scaffoldBackgroundColor: AC.BG,
-          primaryColor: AC.P,
-        ),
-        home: const MN(),
-      );
+  State<OttoApp> createState() => _OttoAppState();
+}
+
+class _OttoAppState extends State<OttoApp> {
+  ThemeMode _themeMode = ThemeMode.dark;
+  void toggleTheme() => setState(() => _themeMode = _themeMode == ThemeMode.dark ? ThemeMode.light : ThemeMode.dark);
+  @override
+  Widget build(BuildContext context) {
+    return MaterialApp(
+      title: 'KartenKiller',
+      debugShowCheckedModeBanner: false,
+      themeMode: _themeMode,
+      darkTheme: ThemeData.dark().copyWith(
+        scaffoldBackgroundColor: AC.BG,
+        appBarTheme: const AppBarTheme(backgroundColor: AC.PN, elevation: 0),
+      ),
+      theme: ThemeData.light(),
+      home: const MN(),
+    );
+  }
 }
 
 // ─── Haupt-Navigation ────────────────────────────────────────────────────────
@@ -590,6 +755,22 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
   late AnimationController _glowController;
   late Animation<double> _glowAnim;
 
+  // ── New features from poker_killer_app ──────────────────────────────────
+  List<CardModel> communityCards = [];
+  List<CardModel> holeCards = [];
+  double _vpip = 25, _pfr = 18;
+  int _selectedBetBtn = -1;
+  bool isBluff = false;
+  double _foldPct = 0, _callPct = 0, _raisePct = 0;
+  String _betDisplay = '', _betReason = '';
+  int? _lastPosition; int? _lastStreet; int? _lastHandRank;
+  double? _lastPot; double? _lastToCall; double? _lastStackSize;
+  StreamSubscription? _accelSub;
+  DateTime _lastShake = DateTime(2000);
+  late AnimationController _flipController;
+  late Animation<double> _flipAnimation;
+  bool _showFront = true;
+
   @override
   void initState() {
     super.initState();
@@ -598,6 +779,19 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
     _tts.setSpeechRate(0.9);
     _glowController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1500))..repeat(reverse: true);
     _glowAnim = Tween<double>(begin: 0.4, end: 1.0).animate(_glowController);
+    _flipController = AnimationController(vsync: this, duration: const Duration(milliseconds: 400));
+    _flipAnimation = Tween<double>(begin: 0, end: 1).animate(CurvedAnimation(parent: _flipController, curve: Curves.easeInOut));
+    _accelSub = accelerometerEventStream().listen((event) {
+      final total = event.x.abs() + event.y.abs() + event.z.abs();
+      if (total > 25) {
+        final now = DateTime.now();
+        if (now.difference(_lastShake).inSeconds > 2) {
+          _lastShake = now;
+          setState(() { r = ''; _confidence = 0; _selectedBetBtn = -1; });
+          HapticFeedback.heavyImpact();
+        }
+      }
+    });
   }
 
   Future<void> _speak(String text) async {
@@ -616,6 +810,8 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _accelSub?.cancel();
+    _flipController.dispose();
     _glowController.dispose();
     _brain.dispose();
     super.dispose();
@@ -652,6 +848,43 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
       c1['r'] ?? 'A', c1['s'] ?? '♠',
       c2['r'] ?? 'K', c2['s'] ?? '♦',
       p, tc, pt,
+    );
+  }
+
+  // ── Nash Push/Fold ────────────────────────────────────────────────────────
+  _NashResult? _nashCheck() {
+    final stackBb = ss / bb;
+    if (hr < 0 || _board.length > 0) return null; // nur preflop
+    if (stackBb < 8) return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push <8bb → Push alles!');
+    if (stackBb < 13 && hr >= 1) return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 8-13bb: Pair+ → Push!');
+    if (stackBb < 20 && hr >= 3) return _NashResult(action: 'ALL-IN', reason: '🎯 Nash Push 13-20bb: Top Hand → Push!');
+    return null;
+  }
+
+  // ── Bet Size Buttons ──────────────────────────────────────────────────────
+  Widget _buildBetSizeButtons() {
+    if (r != 'RAISE' && r != 'ALL-IN') return const SizedBox.shrink();
+    final sizes = [('1/3', pt/3), ('1/2', pt/2), ('2/3', pt*2/3), ('Pot', pt), ('All-In', ss)];
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 8),
+      child: Wrap(spacing: 6, runSpacing: 6, children: sizes.asMap().entries.map((e) {
+        final selected = _selectedBetBtn == e.key;
+        return GestureDetector(
+          onTap: () => setState(() { _selectedBetBtn = e.key; tc = e.value.$2.clamp(0, ss); }),
+          child: Container(
+            padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 6),
+            decoration: BoxDecoration(
+              color: selected ? AC.P.withValues(alpha: 0.3) : Colors.white.withValues(alpha: 0.08),
+              borderRadius: BorderRadius.circular(8),
+              border: Border.all(color: selected ? AC.P : Colors.white.withValues(alpha: 0.2)),
+            ),
+            child: Text('${e.value.$1}\n€${e.value.$2.toStringAsFixed(0)}',
+              textAlign: TextAlign.center,
+              style: TextStyle(color: selected ? AC.P : Colors.white70, fontSize: 11,
+                fontWeight: selected ? FontWeight.bold : FontWeight.normal)),
+          ),
+        );
+      }).toList()),
     );
   }
 
@@ -701,6 +934,10 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
       }
     }
 
+    // Nash Push/Fold Check
+    final nashResult = _nashCheck();
+    if (nashResult != null) action = nashResult.action;
+
     // Stack-Awareness: Short Stack geht All-In statt Raise
     final stackBbs = StackAwareness.stackInBb(ss, bb);
     if (action == 'RAISE' && StackAwareness.shouldGoAllIn(stackBbs)) action = 'ALL-IN';
@@ -740,6 +977,16 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
       _scores = result.scores;
       _betSizing = (action == 'RAISE' || action == 'ALL-IN') ? sizing : null;
     });
+
+    // Hand History speichern
+    HandHistoryService.addRecord(HandRecord(
+      id: DateTime.now().millisecondsSinceEpoch.toString(),
+      date: DateTime.now(),
+      hand: _handName.isNotEmpty ? _handName : _handNameStr(hr),
+      position: PositionAwareness.positionNames[p.clamp(0, 5)],
+      stack: ss / bb,
+      recommendation: r,
+    ));
 
     // TTS Ausgabe
     final actionDe = {
@@ -892,9 +1139,30 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
     return Scaffold(
       appBar: AppBar(
         title: const Row(mainAxisSize: MainAxisSize.min, children: [
-          Text('🦦 '), Text('Otto', style: TextStyle(fontWeight: FontWeight.bold))
+          Text('🦦 '), Text('KartenKiller', style: TextStyle(fontWeight: FontWeight.bold))
         ]),
         centerTitle: true,
+        actions: [
+          IconButton(icon: const Icon(Icons.style), tooltip: 'Range Chart',
+            onPressed: () => showDialog(context: context, builder: (_) => Dialog(
+              backgroundColor: AC.BG, child: PreflopChartScreen(initialPosition: p)))),
+          IconButton(icon: const Icon(Icons.history), tooltip: 'Hand History',
+            onPressed: () => Navigator.push(context, MaterialPageRoute(builder: (_) => const HandHistoryScreen()))),
+          IconButton(icon: const Icon(Icons.person_search), tooltip: 'Gegner',
+            onPressed: () => showDialog(context: context, builder: (_) => Dialog(
+              backgroundColor: AC.BG,
+              child: Padding(
+                padding: const EdgeInsets.all(16),
+                child: OpponentModelWidget(
+                  initialVpip: _vpip, initialPfr: _pfr,
+                  onVpipChanged: (v) => setState(() => _vpip = v),
+                  onPfrChanged: (v) => setState(() => _pfr = v),
+                ),
+              ),
+            ))),
+          IconButton(icon: const Icon(Icons.brightness_6), tooltip: 'Dark/Light',
+            onPressed: () => context.findAncestorStateOfType<_OttoAppState>()?.toggleTheme()),
+        ],
       ),
       body: SingleChildScrollView(
         padding: const EdgeInsets.all(16),
@@ -1017,6 +1285,19 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
                 ]),
               ),
             ],
+            // ── Bet Size Buttons ──────────────────────────────────────────
+            const SizedBox(height: 8),
+            _buildBetSizeButtons(),
+            // ── Nash Push/Fold Reason ─────────────────────────────────────
+            if (_nashCheck() != null)
+              Padding(
+                padding: const EdgeInsets.only(bottom: 8),
+                child: Text(
+                  _nashCheck()!.reason,
+                  style: const TextStyle(color: Colors.yellow, fontSize: 13, fontWeight: FontWeight.bold),
+                  textAlign: TextAlign.center,
+                ),
+              ),
           ],
           const SizedBox(height: 20),
           // ── Stack & Position Info Badge ─────────────────────────────────
@@ -1027,7 +1308,17 @@ class _RPState extends State<RP> with TickerProviderStateMixin {
           _slider('Zu zahlen', tc, 200, (x) => setState(() => tc = x)),
           _slider('Stack', ss, 500, (x) => setState(() => ss = x)),
           _slider('Big Blind', bb, 50, (x) => setState(() => bb = x < 1 ? 1 : x), unit: '\$'),
-          const SizedBox(height: 20),
+          const SizedBox(height: 12),
+          // ── Opponent Model Widget ─────────────────────────────────────
+          OpponentModelWidget(
+            initialVpip: _vpip, initialPfr: _pfr,
+            onVpipChanged: (v) => setState(() => _vpip = v),
+            onPfrChanged: (v) => setState(() => _pfr = v),
+          ),
+          const SizedBox(height: 8),
+          // ── Pot Odds Widget ───────────────────────────────────────────
+          PotOddsWidget(handEquityPercent: (_equity * 100)),
+          const SizedBox(height: 8),
           // Draw-Anzeige
           if (widget.M.isNotEmpty && _board.isNotEmpty) ...[
             _drawsWidget(),
