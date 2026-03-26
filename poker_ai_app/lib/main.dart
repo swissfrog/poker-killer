@@ -1,4 +1,5 @@
 import 'dart:typed_data';
+import 'dart:math' as math;
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -123,14 +124,28 @@ class PokerBrain {
       final output = [List.filled(4, 0.0)];
       _interpreter!.run(input, output);
 
-      final scores = output[0];
+      final rawScores = output[0];
+
+      // Softmax für echte Wahrscheinlichkeiten
+      final maxRaw = rawScores.reduce((a, b) => a > b ? a : b);
+      double expSum = 0;
+      final softmaxScores = <double>[];
+      for (final s in rawScores) {
+        final e = math.exp((s - maxRaw).clamp(-50.0, 0.0));
+        softmaxScores.add(e);
+        expSum += e;
+      }
+      final scores = expSum > 0
+          ? softmaxScores.map((e) => e / expSum).toList()
+          : List.filled(rawScores.length, 1.0 / rawScores.length);
+
       int maxIdx = 0;
       double maxVal = scores[0];
-      for (int i = 1; i < 4; i++) {
+      for (int i = 1; i < scores.length; i++) {
         if (scores[i] > maxVal) { maxVal = scores[i]; maxIdx = i; }
       }
 
-      String action = kActions[maxIdx];
+      String action = kActions[maxIdx < kActions.length ? maxIdx : 0];
 
       // Stack-Overlay: Push/Fold Zone Override
       action = StackAwareness.applyStackOverlay(
