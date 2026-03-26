@@ -1,5 +1,6 @@
 import 'dart:typed_data';
 import 'dart:math' as math;
+import 'dart:ui';
 import 'package:flutter/material.dart';
 import 'package:camera/camera.dart';
 import 'package:tflite_flutter/tflite_flutter.dart';
@@ -469,6 +470,33 @@ Future<void> main() async {
   runApp(const OttoApp());
 }
 
+// ─── Glassmorphism Panel ──────────────────────────────────────────────────────
+class GlassPanel extends StatelessWidget {
+  final Widget child;
+  final EdgeInsets padding;
+  final Color? borderColor;
+  const GlassPanel({super.key, required this.child,
+    this.padding = const EdgeInsets.all(16), this.borderColor});
+  @override
+  Widget build(BuildContext context) {
+    return ClipRRect(
+      borderRadius: BorderRadius.circular(16),
+      child: BackdropFilter(
+        filter: ImageFilter.blur(sigmaX: 12, sigmaY: 12),
+        child: Container(
+          padding: padding,
+          decoration: BoxDecoration(
+            color: Colors.white.withValues(alpha: 0.07),
+            borderRadius: BorderRadius.circular(16),
+            border: Border.all(color: borderColor ?? Colors.white.withValues(alpha: 0.15), width: 1),
+          ),
+          child: child,
+        ),
+      ),
+    );
+  }
+}
+
 class OttoApp extends StatelessWidget {
   const OttoApp({super.key});
   @override
@@ -541,7 +569,7 @@ class RP extends StatefulWidget {
 // Globaler Gegner-Tracker (Session-weit)
 final OpponentTracker globalTracker = OpponentTracker();
 
-class _RPState extends State<RP> {
+class _RPState extends State<RP> with TickerProviderStateMixin {
   int p = 2, hr = 0;
   double pt = 100, tc = 20, ss = 200;
   double bb = 2; // Big Blind Größe
@@ -559,6 +587,8 @@ class _RPState extends State<RP> {
   bool _calcEquity = false;
   final FlutterTts _tts = FlutterTts();
   List<Map<String, String>> _manualBoard = [];
+  late AnimationController _glowController;
+  late Animation<double> _glowAnim;
 
   @override
   void initState() {
@@ -566,6 +596,8 @@ class _RPState extends State<RP> {
     _brain.load().then((_) => setState(() => _brainReady = true));
     _tts.setLanguage('de-DE');
     _tts.setSpeechRate(0.9);
+    _glowController = AnimationController(vsync: this, duration: const Duration(milliseconds: 1500))..repeat(reverse: true);
+    _glowAnim = Tween<double>(begin: 0.4, end: 1.0).animate(_glowController);
   }
 
   Future<void> _speak(String text) async {
@@ -573,8 +605,18 @@ class _RPState extends State<RP> {
     await _tts.speak(text);
   }
 
+  Color _actionColor() {
+    switch (r) {
+      case 'RAISE': case 'ALL-IN': return const Color(0xFF00FF88);
+      case 'FOLD': return Colors.red.shade400;
+      case 'CALL': return Colors.blue.shade300;
+      default: return Colors.orange.shade300;
+    }
+  }
+
   @override
   void dispose() {
+    _glowController.dispose();
     _brain.dispose();
     super.dispose();
   }
@@ -897,28 +939,31 @@ class _RPState extends State<RP> {
             ),
           if (r.isNotEmpty) ...[
             // ── Empfehlung Haupt-Box ──────────────────────────────────────
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
-              decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  colors: r == 'ALL-IN'
-                      ? [Colors.red, Colors.red.shade700]
-                      : [AC.P, AC.P.withOpacity(0.7)],
-                  begin: Alignment.topLeft,
-                  end: Alignment.bottomRight,
+            AnimatedBuilder(
+              animation: _glowAnim,
+              builder: (context, child) => Container(
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(16),
+                  boxShadow: [BoxShadow(
+                    color: _actionColor().withValues(alpha: _glowAnim.value * 0.6),
+                    blurRadius: 28, spreadRadius: 2,
+                  )],
                 ),
-                borderRadius: BorderRadius.circular(16),
+                child: GlassPanel(
+                  padding: const EdgeInsets.symmetric(horizontal: 24, vertical: 20),
+                  borderColor: _actionColor().withValues(alpha: 0.7),
+                  child: Column(children: [
+                    const Text('EMPFEHLUNG',
+                        style: TextStyle(fontSize: 14, color: Colors.white54)),
+                    Text(r, style: TextStyle(
+                        fontSize: 42, fontWeight: FontWeight.bold,
+                        color: _actionColor())),
+                    const SizedBox(height: 2),
+                    Text('${(_confidence * 100).toStringAsFixed(0)}% Konfidenz',
+                        style: const TextStyle(fontSize: 12, color: Colors.white38)),
+                  ]),
+                ),
               ),
-              child: Column(children: [
-                const Text('EMPFEHLUNG',
-                    style: TextStyle(fontSize: 14, color: Colors.black54)),
-                Text(r,
-                    style: const TextStyle(
-                        fontSize: 42, fontWeight: FontWeight.bold, color: Colors.black)),
-                const SizedBox(height: 2),
-                Text('${(_confidence * 100).toStringAsFixed(0)}% Konfidenz',
-                    style: const TextStyle(fontSize: 12, color: Colors.black45)),
-              ]),
             ),
             const SizedBox(height: 10),
             // ── Action-Wahrscheinlichkeiten als farbige Balken ────────────
