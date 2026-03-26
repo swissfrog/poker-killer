@@ -25,6 +25,10 @@ jobs:
           flutter-version: '3.24.0'
           channel: stable
 
+      - name: Remove trainer to avoid v1 embedding scan
+        run: |
+          rm -rf trainer
+
       - name: Download TFLite Models
         run: |
           mkdir -p poker_killer_app/assets
