@@ -25,17 +25,33 @@ jobs:
           flutter-version: '3.24.0'
           channel: stable
 
-      - name: Remove trainer to avoid v1 embedding scan
+      - name: Remove dirs with v1 embedding remnants
         run: |
           rm -rf trainer
+          rm -rf poker_ai_app
 
-      - name: Download TFLite Models
+      - name: Prepare assets
         run: |
           mkdir -p poker_killer_app/assets
           wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/64x3-cards.tflite" \
             -O poker_killer_app/assets/64x3-cards.tflite
           wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/poker_brain.tflite" \
             -O poker_killer_app/assets/poker_brain.tflite
+          # Create placeholder for RL model if not available
+          if [ ! -f poker_killer_app/assets/poker_brain_rl.tflite ]; then
+            cp poker_killer_app/assets/poker_brain.tflite poker_killer_app/assets/poker_brain_rl.tflite
+          fi
+          # Create placeholder app icon
+          convert -size 48x48 xc:'#00ff88' poker_killer_app/assets/app_icon.png 2>/dev/null \
+            || python3 -c "
+          import struct, zlib
+          def png(w,h):
+            def chunk(t,d):return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
+            raw=b''
+            for y in range(h):raw+=b'\x00'+b'\x00\xff\x88\xff'*w
+            return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
+          open('poker_killer_app/assets/app_icon.png','wb').write(png(48,48))
+          "
           ls -lh poker_killer_app/assets/
 
       - name: Flutter pub get

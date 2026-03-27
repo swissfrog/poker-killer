@@ -24,8 +24,8 @@ if (flutterVersionName == null) {
 
 android {
     namespace = "com.kartenkiller.poker"
-    compileSdk = 36
-    ndkVersion = "27.0.12077973"
+    compileSdk = 34
+    ndkVersion = flutter.ndkVersion
 
     compileOptions {
         sourceCompatibility = JavaVersion.VERSION_17

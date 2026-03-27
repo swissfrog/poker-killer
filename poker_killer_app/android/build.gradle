@@ -1,0 +1,24 @@
+// This file is intentionally minimal.
+// The new Flutter Gradle integration uses settings.gradle for plugin loading.
+// This file must exist so that Flutter tooling correctly detects the Gradle-based project structure.
+
+allprojects {
+    repositories {
+        google()
+        mavenCentral()
+    }
+}
+
+rootProject.buildDir = "../build"
+
+subprojects {
+    project.buildDir = "${rootProject.buildDir}/${project.name}"
+}
+
+subprojects {
+    project.evaluationDependsOn(":app")
+}
+
+tasks.register("clean", Delete) {
+    delete rootProject.buildDir
+}
