@@ -46,6 +46,11 @@ jobs:
         working-directory: poker_killer_app
         run: flutter create .
 
+      - name: Remove unwanted Kotlin host file
+        working-directory: poker_killer_app
+        run: |
+          rm -rf android/app/src/main/kotlin/com/kartenkiller/poker_killer_app
+
       - name: Build APK
         working-directory: poker_killer_app
         run: flutter build apk --release
