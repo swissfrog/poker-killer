@@ -42,14 +42,10 @@ jobs:
         working-directory: poker_killer_app
         run: flutter pub get
 
-      - name: Regenerate Android host (v2 embedding)
-        working-directory: poker_killer_app
-        run: flutter create .
-
-      - name: Remove unwanted Kotlin host file
+      - name: Clean stale Java source files
         working-directory: poker_killer_app
         run: |
-          rm -rf android/app/src/main/kotlin/com/kartenkiller/poker_killer_app
+          rm -rf android/app/src/main/java/io
 
       - name: Build APK
         working-directory: poker_killer_app
