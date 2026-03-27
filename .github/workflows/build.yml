@@ -37,18 +37,13 @@ jobs:
             -O poker_killer_app/assets/64x3-cards.tflite
           wget -q "https://github.com/swissfrog/poker-killer/releases/download/models-v5/poker_brain.tflite" \
             -O poker_killer_app/assets/poker_brain.tflite
-          # Create placeholder for RL model if not available
-          if [ ! -f poker_killer_app/assets/poker_brain_rl.tflite ]; then
-            cp poker_killer_app/assets/poker_brain.tflite poker_killer_app/assets/poker_brain_rl.tflite
-          fi
-          # Create placeholder app icon
-          convert -size 48x48 xc:'#00ff88' poker_killer_app/assets/app_icon.png 2>/dev/null \
-            || python3 -c "
+          cp poker_killer_app/assets/poker_brain.tflite poker_killer_app/assets/poker_brain_rl.tflite
+          python3 -c "
           import struct, zlib
           def png(w,h):
-            def chunk(t,d):return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
+            def chunk(t,d): return struct.pack('>I',len(d))+t+d+struct.pack('>I',zlib.crc32(t+d)&0xffffffff)
             raw=b''
-            for y in range(h):raw+=b'\x00'+b'\x00\xff\x88\xff'*w
+            for y in range(h): raw+=b'\x00'+b'\x00\xff\x88\xff'*w
             return b'\x89PNG\r\n\x1a\n'+chunk(b'IHDR',struct.pack('>IIBBBBB',w,h,8,6,0,0,0))+chunk(b'IDAT',zlib.compress(raw))+chunk(b'IEND',b'')
           open('poker_killer_app/assets/app_icon.png','wb').write(png(48,48))
           "
@@ -58,14 +53,13 @@ jobs:
         working-directory: poker_killer_app
         run: flutter pub get
 
-      - name: Clean stale Java source files
-        working-directory: poker_killer_app
-        run: |
-          rm -rf android/app/src/main/java/io
-
       - name: Build APK
         working-directory: poker_killer_app
-        run: flutter build apk --release
+        run: |
+          # Remove any stale GeneratedPluginRegistrant from source tree
+          # Flutter 3.24 auto-generates this during build; old copies cause compile errors
+          rm -rf android/app/src/main/java/io
+          flutter build apk --release
 
       - name: Upload APK
         uses: actions/upload-artifact@v4
