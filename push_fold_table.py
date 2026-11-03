@@ -37,6 +37,10 @@ class PushFoldTable:
         if 0 <= index < len(self.STACKS):
             self.stack_bb = self.STACKS[index]
 
+    def cycle_stack(self, direction):
+        index = self.STACKS.index(self.stack_bb)
+        self.stack_bb = self.STACKS[(index + direction) % len(self.STACKS)]
+
     def toggle_window(self):
         self.is_open = not self.is_open
         if self.is_open:
@@ -60,7 +64,7 @@ class PushFoldTable:
         if not isinstance(entry, dict):
             cv2.putText(image, "Keine Tabelle fuer diese Position/Stacktiefe geladen.",
                         (20, 155), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (235, 235, 235), 1)
-            cv2.putText(image, "JSON-Schema: {POSITION: {"10": {"push": [], "call": []}}}",
+            cv2.putText(image, "Add push_fold_tables.json with position/stack entries.",
                         (20, 190), cv2.FONT_HERSHEY_SIMPLEX, 0.43, (190, 190, 190), 1)
             return image
         push = set(entry.get("push", []))
