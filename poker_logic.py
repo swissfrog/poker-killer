@@ -99,7 +99,9 @@ class PokerLogic:
             counts[value] = counts.get(value, 0) + 1
         groups = sorted(((count, value) for value, count in counts.items()), reverse=True)
         if groups[0][0] == 4:
-            return (7, groups[0][1], max(value for value in values if value != groups[0][1]))
+            quad = groups[0][1]
+            kickers = [value for value in values if value != quad]
+            return (7, quad, max(kickers) if kickers else 0)
         if groups[0][0] == 3:
             return (3, groups[0][1]) + tuple(sorted((v for v in values if v != groups[0][1]), reverse=True))
         pairs = sorted((value for value, count in counts.items() if count == 2), reverse=True)
@@ -161,7 +163,7 @@ class PokerLogic:
         call = max(0.0, float(call_amount))
         if call == 0:
             action = "CHECK AVAILABLE"
-            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen."
+            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen. Position: {}.".format(position)
         else:
             pot_odds = call / (pot + call) if pot + call else 1.0
             margin = {"UTG": 0.04, "MP": 0.03, "CO": 0.02, "BTN": 0.0, "SB": 0.02, "BB": 0.01}.get(position, 0.02)
