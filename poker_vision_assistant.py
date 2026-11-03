@@ -14,6 +14,7 @@ import time
 import json
 from collections import namedtuple
 from typing import List, Tuple, Optional
+from hand_history import HandHistory
 
 # Farben für die Kartenerkennung (in HSV)
 CARD_COLORS = {
@@ -222,7 +223,7 @@ class CardDetector:
                     rank_idx = min(int(brightness / 20), 12)
                     rank = Card.RANKS[rank_idx]
                     
-                    cards.append(Card(rank, suit)
+                    cards.append(Card(rank, suit))
                     
                     # Zeichne Rahmen
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
@@ -242,6 +243,7 @@ class PokerVisionAssistant:
         self.cap = cv2.VideoCapture(camera_index)
         self.card_detector = CardDetector()
         self.poker_logic = PokerLogic()
+        self.history = HandHistory()
         
         self.player_cards: List[Card] = []
         self.community_cards: List[Card] = []
@@ -258,6 +260,7 @@ class PokerVisionAssistant:
         print("🎲 Poker Vision Assistant gestartet!")
         print("Drücke 'q' zum Beenden")
         print("Drücke 'r' um Karten zu resetten")
+        print("Drücke 'h' um die letzten Hände anzuzeigen")
         
         while self.running:
             ret, frame = self.cap.read()
@@ -268,11 +271,18 @@ class PokerVisionAssistant:
             # Karten erkennen
             self.player_cards = self.card_detector.detect_cards(frame)
             
+            # Empfehlung und Hand-History aktualisieren
+            self._update_recommendation()
+            self.history.observe(
+                self.player_cards,
+                self.community_cards,
+                self.pot_size,
+                self.current_bet,
+                self.last_recommendation,
+            )
+
             # UI zeichnen
             self._draw_ui(frame)
-            
-            # Empfehlung aktualisieren
-            self._update_recommendation()
             
             cv2.imshow('Poker Vision Assistant', frame)
             
@@ -282,6 +292,8 @@ class PokerVisionAssistant:
             elif key == ord('r'):
                 self.player_cards = []
                 self.community_cards = []
+            elif key == ord('h'):
+                self.history.print_recent()
         
         self.stop()
     
@@ -294,6 +306,9 @@ class PokerVisionAssistant:
         cv2.putText(frame, "🎲 Poker Vision Assistant", (20, 40), 
                     cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
         
+        cv2.putText(frame, "History: {} | Taste h zeigt Eintraege".format(len(self.history.entries)),
+                    (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
+
         # Spieler-Karten anzeigen
         y_card = height - 150
         if self.player_cards:
