@@ -147,7 +147,7 @@ class PokerKillerAndroidApp(App):
     def _camera_permission_result(self, *args):
         results = args[-1] if args else []
         first = results[0] if isinstance(results, (list, tuple)) and results else None
-        granted = first is True or first == 0
+        granted = first is True or (not isinstance(first, bool) and first == 0)
         Clock.schedule_once(lambda _dt: self._camera_result(granted), 0)
 
     def _camera_result(self, granted):
