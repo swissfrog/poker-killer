@@ -326,6 +326,7 @@ class PokerVisionAssistant:
             elif key == ord('r'):
                 self.player_cards = []
                 self.community_cards = []
+                self.detection_paused_until = time.monotonic() + 1.5
             elif key == ord('h'):
                 self.history.print_recent()
             elif key == ord('p'):
@@ -347,8 +348,6 @@ class PokerVisionAssistant:
                 self.push_fold_table.cycle_stack(-1)
             elif key == ord(']'):
                 self.push_fold_table.cycle_stack(1)
-            elif key == ord('r'):
-                self.detection_paused_until = time.monotonic() + 1.5
         
         self.stop()
     
