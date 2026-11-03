@@ -380,6 +380,7 @@ class PokerVisionAssistant:
             tuple((card.rank, card.suit) for card in self.community_cards),
             self.pot_size,
             self.current_bet,
+            self.bet_sizing.proposed_bet,
             self.range_chart.position,
         )
         if cache_key == self._recommendation_key:
@@ -394,6 +395,7 @@ class PokerVisionAssistant:
                 self.pot_size,
                 self.current_bet,
                 self.range_chart.position,
+                self.bet_sizing.proposed_bet,
             )
         except ValueError as exc:
             self.last_recommendation = "Keine Empfehlung: ungueltige Karten"
