@@ -285,8 +285,8 @@ class PokerVisionAssistant:
         cv2.putText(frame, "Kartenmodus: {} | c: Korrektur | v: Kamera".format(
             "manuell" if self.manual_card_mode else "Kamera (unbestaetigt)"),
             (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.43, foreground, 1)
-        cv2.putText(frame, "Pot {:.0f} | Einsatz {:.0f} | m: Shake-Reset {}".format(
-            pot_size, current_bet, "AN" if self.shake_reset_enabled else "AUS"),
+        cv2.putText(frame, "Pot {:.0f} | Call {:.0f} | Bet-Preset {:.0f} | Shake-Reset {}".format(
+            pot_size, current_bet, self.bet_sizing.proposed_bet, "AN" if self.shake_reset_enabled else "AUS"),
             (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
         self._draw_bluff_meter(frame, foreground)
         self.card_animation.draw(frame, self.player_cards, 20, 175)
