@@ -31,6 +31,7 @@ import poker_vision_assistant
 from card_correction import CardCorrectionUI
 from poker_logic import PokerLogic
 from poker_vision_assistant import Card
+from android_app.card_input import parse_cards, validate_deal
 
 
 class FakeCard:
@@ -153,6 +154,27 @@ class FeatureTests(unittest.TestCase):
         self.assertIn("CALL", button[0])
         self.assertIn("Pot Odds", button[1])
         self.assertIn("BTN", button[1])
+
+    def test_mobile_card_parser_accepts_short_and_unicode_suits(self):
+        self.assertEqual(parse_cards("As Kh 10d 7c"), [
+            ("A", "spades"), ("K", "hearts"), ("10", "diamonds"), ("7", "clubs")
+        ])
+        self.assertEqual(parse_cards("A♠ K♥"), [("A", "spades"), ("K", "hearts")])
+
+    def test_mobile_deal_validation_rejects_duplicates_and_incomplete_board(self):
+        with self.assertRaises(ValueError):
+            validate_deal("As As", "")
+        with self.assertRaises(ValueError):
+            validate_deal("As Kh", "2c 3d")
+        hole, board = validate_deal("As Kh", "2c 3d 4h")
+        self.assertEqual(len(hole), 2)
+        self.assertEqual(len(board), 3)
+
+    def test_recommendation_reuses_supplied_equity(self):
+        cards = [Card("A", "spades"), Card("A", "hearts")]
+        with patch.object(PokerLogic, "calculate_equity") as calculate:
+            PokerLogic.recommend(cards, [], 100, 20, "BTN", equity_result=(0.6, 0.01))
+            calculate.assert_not_called()
 
 
 if __name__ == "__main__":
