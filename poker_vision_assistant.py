@@ -12,9 +12,16 @@ import numpy as np
 import threading
 import time
 import json
+import math
 from collections import namedtuple
 from typing import List, Tuple, Optional
 from hand_history import HandHistory
+from opponent_model import OpponentModel
+from preflop_range_chart import PreflopRangeChart
+from push_fold_table import PushFoldTable
+from bet_sizing import BetSizingControls
+from card_flip_animation import CardFlipAnimation
+from shake_reset import ShakeResetDetector
 
 # Farben für die Kartenerkennung (in HSV)
 CARD_COLORS = {
@@ -244,6 +251,15 @@ class PokerVisionAssistant:
         self.card_detector = CardDetector()
         self.poker_logic = PokerLogic()
         self.history = HandHistory()
+        self.opponent_model = OpponentModel()
+        self.range_chart = PreflopRangeChart()
+        self.push_fold_table = PushFoldTable()
+        self.bet_sizing = BetSizingControls()
+        self.card_animation = CardFlipAnimation()
+        self.shake_detector = ShakeResetDetector()
+        self.shake_reset_enabled = True
+        self.detection_paused_until = 0.0
+        self.light_mode = False
         
         self.player_cards: List[Card] = []
         self.community_cards: List[Card] = []
@@ -260,7 +276,8 @@ class PokerVisionAssistant:
         print("🎲 Poker Vision Assistant gestartet!")
         print("Drücke 'q' zum Beenden")
         print("Drücke 'r' um Karten zu resetten")
-        print("Drücke 'h' um die letzten Hände anzuzeigen")
+        print("Drücke 'h' für History, 'p' für Ranges, 'n' für Push/Fold, 'b' für Bet-Sizing")
+        print("Drücke 't' für Theme, 'm' schaltet Shake-Reset um; Position im Chart: 1-6")
         
         while self.running:
             ret, frame = self.cap.read()
@@ -268,8 +285,19 @@ class PokerVisionAssistant:
                 print("❌ Kein Kamerabild")
                 break
             
+            # Kamera-Schütteln als Reset-Geste; die Historie bleibt erhalten.
+            if self.shake_reset_enabled and self.shake_detector.update(frame):
+                self.player_cards = []
+                self.community_cards = []
+                self.last_recommendation = ""
+                self.detection_paused_until = time.monotonic() + 1.5
+                print("Shake-Reset erkannt; Kartenansicht zurückgesetzt")
+
             # Karten erkennen
-            self.player_cards = self.card_detector.detect_cards(frame)
+            if time.monotonic() >= self.detection_paused_until:
+                self.player_cards = self.card_detector.detect_cards(frame)
+            else:
+                self.player_cards = []
             
             # Empfehlung und Hand-History aktualisieren
             self._update_recommendation()
@@ -285,6 +313,12 @@ class PokerVisionAssistant:
             self._draw_ui(frame)
             
             cv2.imshow('Poker Vision Assistant', frame)
+            if self.range_chart.is_open:
+                cv2.imshow(self.range_chart.WINDOW_NAME, self.range_chart.render(self.player_cards))
+            if self.push_fold_table.is_open:
+                cv2.imshow(self.push_fold_table.WINDOW_NAME, self.push_fold_table.render(self.player_cards))
+            if self.bet_sizing.is_open:
+                self.bet_sizing.render()
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -294,6 +328,27 @@ class PokerVisionAssistant:
                 self.community_cards = []
             elif key == ord('h'):
                 self.history.print_recent()
+            elif key == ord('p'):
+                self.range_chart.toggle_window()
+            elif key == ord('n'):
+                self.push_fold_table.toggle_window()
+            elif key == ord('b'):
+                self.bet_sizing.toggle_window()
+            elif key == ord('t'):
+                self.light_mode = not self.light_mode
+            elif key == ord('m'):
+                self.shake_reset_enabled = not self.shake_reset_enabled
+                print("Shake-Reset {}".format("aktiv" if self.shake_reset_enabled else "aus"))
+            elif key in [ord(str(i)) for i in range(1, 7)]:
+                position_index = key - ord('1')
+                self.range_chart.set_position_index(position_index)
+                self.push_fold_table.set_position_index(position_index)
+            elif key == ord('['):
+                self.push_fold_table.cycle_stack(-1)
+            elif key == ord(']'):
+                self.push_fold_table.cycle_stack(1)
+            elif key == ord('r'):
+                self.detection_paused_until = time.monotonic() + 1.5
         
         self.stop()
     
@@ -301,20 +356,37 @@ class PokerVisionAssistant:
         """Zeichnet die UI auf das Bild"""
         height, width = frame.shape[:2]
         
-        # Header
-        cv2.rectangle(frame, (0, 0), (width, 60), (20, 20, 30), -1)
-        cv2.putText(frame, "🎲 Poker Vision Assistant", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        # Theme und Kopfbereich
+        header_color = (225, 225, 225) if self.light_mode else (20, 20, 30)
+        foreground = (30, 30, 30) if self.light_mode else (245, 245, 245)
+        cv2.rectangle(frame, (0, 0), (width, 60), header_color, -1)
+        cv2.putText(frame, "Poker Vision Assistant | {} mode".format("Light" if self.light_mode else "Dark"), (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, foreground, 2)
         
-        cv2.putText(frame, "History: {} | Taste h zeigt Eintraege".format(len(self.history.entries)),
-                    (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (220, 220, 220), 1)
+        cv2.putText(frame, "History: {} | h: Verlauf | p: Range | n: Push/Fold | b: Bet".format(len(self.history.entries)),
+                    (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+        cv2.putText(frame, self.opponent_model.summary(), (20, 108),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, foreground, 1)
+        pot_size, current_bet = self.bet_sizing.values()
+        self.pot_size, self.current_bet = pot_size, current_bet
+        cv2.putText(frame, "Pot {:.0f} | Einsatz {:.0f} | m: Shake-Reset {}".format(
+            pot_size, current_bet, "AN" if self.shake_reset_enabled else "AUS"),
+            (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+        self._draw_bluff_meter(frame, foreground)
+        self.card_animation.draw(frame, self.player_cards, 20, 155)
+        vpip, pfr = self.opponent_model.values()
+        if vpip >= 35 and vpip > 0 and pfr / float(vpip) <= 0.35:
+            pulse = 110 + int(100 * (0.5 + 0.5 * math.sin(time.monotonic() * 6)))
+            cv2.rectangle(frame, (width - 205, 12), (width - 18, 48), (20, pulse, 30), -1)
+            cv2.putText(frame, "Fish profile? (manuell)", (width - 198, 36),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
 
         # Spieler-Karten anzeigen
         y_card = height - 150
         if self.player_cards:
             card_text = " ".join(str(c) for c in self.player_cards)
-            cv2.putText(frame, f"Deine Karten: {card_text}", (20, y_card), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"Deine Karten: {card_text}", (20, y_card),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 130, 30), 2)
         
         # Gemeinschaftskarten
         if self.community_cards:
@@ -346,6 +418,18 @@ class PokerVisionAssistant:
             cv2.putText(frame, strength_text, (width - 250, height - 20), 
                         cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
+    def _draw_bluff_meter(self, frame, foreground):
+        """Zeigt eine manuelle Schätzung, keine berechnete Bluff-Wahrscheinlichkeit."""
+        height, width = frame.shape[:2]
+        value = self.opponent_model.bluff_estimate()
+        center = (width - 100, height - 80)
+        cv2.ellipse(frame, center, (70, 42), 0, 180, 360, (130, 130, 130), 5)
+        angle = math.pi - (value / 100.0) * math.pi
+        endpoint = (int(center[0] + 62 * math.cos(angle)), int(center[1] - 36 * math.sin(angle)))
+        cv2.line(frame, center, endpoint, (0, 160, 255), 3)
+        cv2.putText(frame, "Bluff (manuell) {}%".format(value),
+                    (width - 210, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+
     def _update_recommendation(self):
         """Aktualisiert die Empfehlung"""
         if len(self.player_cards) >= 2:
