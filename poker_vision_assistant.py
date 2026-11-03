@@ -190,9 +190,9 @@ class PokerVisionAssistant:
             else:
                 self.player_cards = []
             
-            # Empfehlung und Hand-History aktualisieren
-            self._update_recommendation()
+            # Einsatzwerte zuerst lesen, damit Empfehlung und Verlauf denselben Zustand nutzen.
             self.pot_size, self.current_bet = self.bet_sizing.values()
+            self._update_recommendation()
             self.history.observe(
                 self.player_cards,
                 self.community_cards,
@@ -221,6 +221,9 @@ class PokerVisionAssistant:
                 self.player_cards = []
                 self.community_cards = []
                 self.last_recommendation = ""
+                self.last_recommendation_reason = ""
+                if self.manual_card_mode:
+                    self.card_editor.load_cards([], [])
                 self.detection_paused_until = time.monotonic() + 1.5
             elif key == ord('h'):
                 self.history.print_recent()
@@ -324,14 +327,17 @@ class PokerVisionAssistant:
                 cv2.putText(frame, self.last_recommendation_reason[:100], (max(10, width//8), height//2 + 42),
                             cv2.FONT_HERSHEY_SIMPLEX, 0.42, foreground, 1)
         
-        # Hand-Stärke
-        if self.player_cards:
-            hand_name, _category = self.poker_logic.evaluate_hand(
-                self.player_cards + self.community_cards
-            )
-            strength_text = "Hand-Rang: {}".format(hand_name)
-            cv2.putText(frame, strength_text, (width - 250, height - 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # Einen Hand-Rang nur fuer bestaetigte, vollstaendige manuelle Karten anzeigen.
+        if self.manual_card_mode and self.card_editor.confirmed:
+            known_cards = self.player_cards + self.community_cards
+            if 2 <= len(known_cards) <= 7:
+                try:
+                    hand_name, _category = self.poker_logic.evaluate_hand(known_cards)
+                except ValueError:
+                    hand_name = "ungueltige Karten"
+                strength_text = "Hand-Rang: {}".format(hand_name)
+                cv2.putText(frame, strength_text, (width - 250, height - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
     def _draw_bluff_meter(self, frame, foreground):
         """Zeigt eine manuelle Schätzung, keine berechnete Bluff-Wahrscheinlichkeit."""
@@ -360,12 +366,23 @@ class PokerVisionAssistant:
         """Gibt nur fuer bestaetigte manuelle Karten eine begruendete Entscheidung aus."""
         self.last_recommendation = ""
         self.last_recommendation_reason = ""
+        self._recommendation_key = None
         if not self.manual_card_mode or not self.card_editor.confirmed:
-            self.last_recommendation = "Karten pruefen und mit c bestaetigen"
+            self.last_recommendation = "Karten pruefen und in der Korrektur bestaetigen"
             return
         if len(self.player_cards) != 2:
             self.last_recommendation = "Keine Empfehlung: genau zwei Hole Cards benoetigt"
             return
+        cache_key = (
+            tuple((card.rank, card.suit) for card in self.player_cards),
+            tuple((card.rank, card.suit) for card in self.community_cards),
+            self.pot_size,
+            self.current_bet,
+            self.range_chart.position,
+        )
+        if cache_key == self._recommendation_key:
+            return
+        self._recommendation_key = cache_key
         try:
             action, reason = self.poker_logic.recommend(
                 self.player_cards,
