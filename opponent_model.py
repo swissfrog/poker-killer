@@ -14,6 +14,7 @@ class OpponentModel:
         cv2.namedWindow(self.window_name, cv2.WINDOW_NORMAL)
         cv2.createTrackbar("VPIP %", self.window_name, 25, 100, lambda _value: None)
         cv2.createTrackbar("PFR %", self.window_name, 18, 100, lambda _value: None)
+        cv2.createTrackbar("Bluff estimate % (manual)", self.window_name, 25, 100, lambda _value: None)
         self._created = True
 
     def values(self):
@@ -21,6 +22,10 @@ class OpponentModel:
         vpip = cv2.getTrackbarPos("VPIP %", self.window_name)
         pfr = min(cv2.getTrackbarPos("PFR %", self.window_name), vpip)
         return vpip, pfr
+
+    def bluff_estimate(self):
+        self.create_controls()
+        return cv2.getTrackbarPos("Bluff estimate % (manual)", self.window_name)
 
     def summary(self):
         vpip, pfr = self.values()
