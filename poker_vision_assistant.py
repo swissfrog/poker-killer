@@ -135,6 +135,7 @@ class PokerVisionAssistant:
         self.card_editor = CardCorrectionUI(Card)
         self.manual_card_mode = False
         self.last_recommendation_reason = ""
+        self._recommendation_key = None
         self.history = HandHistory()
         self.opponent_model = OpponentModel()
         self.range_chart = PreflopRangeChart()
@@ -364,14 +365,15 @@ class PokerVisionAssistant:
 
     def _update_recommendation(self):
         """Gibt nur fuer bestaetigte manuelle Karten eine begruendete Entscheidung aus."""
-        self.last_recommendation = ""
-        self.last_recommendation_reason = ""
-        self._recommendation_key = None
         if not self.manual_card_mode or not self.card_editor.confirmed:
+            self._recommendation_key = None
             self.last_recommendation = "Karten pruefen und in der Korrektur bestaetigen"
+            self.last_recommendation_reason = ""
             return
         if len(self.player_cards) != 2:
+            self._recommendation_key = None
             self.last_recommendation = "Keine Empfehlung: genau zwei Hole Cards benoetigt"
+            self.last_recommendation_reason = ""
             return
         cache_key = (
             tuple((card.rank, card.suit) for card in self.player_cards),
@@ -383,6 +385,8 @@ class PokerVisionAssistant:
         if cache_key == self._recommendation_key:
             return
         self._recommendation_key = cache_key
+        self.last_recommendation = ""
+        self.last_recommendation_reason = ""
         try:
             action, reason = self.poker_logic.recommend(
                 self.player_cards,
