@@ -156,9 +156,9 @@ class PokerLogic:
         return equity, error
 
     @classmethod
-    def recommend(cls, hole_cards, community_cards, pot_size, call_amount, position, proposed_bet=0):
+    def recommend(cls, hole_cards, community_cards, pot_size, call_amount, position, proposed_bet=0, equity_result=None):
         """Explain a pot-odds decision under a random-opponent assumption."""
-        equity, error = cls.calculate_equity(hole_cards, community_cards)
+        equity, error = equity_result or cls.calculate_equity(hole_cards, community_cards)
         pot = max(0.0, float(pot_size))
         call = max(0.0, float(call_amount))
         if call == 0:
