@@ -50,6 +50,12 @@ Der Hand-Evaluator prüft die beste Fünf-Karten-Hand aus zwei bis sieben unters
 
 Die Tabellenansicht liest `push_fold_tables.json`. Eine Vorlage liegt in `push_fold_tables.example.json`. Das Format enthält Position, Stacktiefe in Big Blinds sowie Push- und Call-Kombinationen. Es sind bewusst keine Nash-Ranges vorinstalliert: Ohne Solver-Ausgabe und Spielannahmen (Auszahlungsstruktur, Blinds, Antes und Gegner) wären solche Werte nicht belastbar. Die Ansicht zeigt nur bereitgestellte Daten.
 
+## Private Android-Version
+
+Die mobile Oberfläche liegt in `android_app/`; `main.py` und `buildozer.spec` bauen eine private Kivy-App. Die Kamera wird nur als lokale Vorschau verwendet. Karten werden manuell eingegeben und bestätigt. Hand-History wird im privaten App-Speicher des Geräts abgelegt. Es gibt keine Internet-Berechtigung und keinen Veröffentlichungs-Workflow.
+
+Ein APK-Build benötigt Buildozer sowie Android SDK/NDK; unter Windows erfolgt der Build über WSL. Die erzeugte APK kann anschließend direkt auf dem eigenen Android-Gerät installiert werden.
+
 ## Voraussetzungen und Grenzen
 
 - Python 3.8+, Webcam, OpenCV und NumPy
