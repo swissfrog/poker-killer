@@ -163,12 +163,14 @@ class PokerLogic:
         call = max(0.0, float(call_amount))
         if call == 0:
             action = "CHECK AVAILABLE"
-            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen. Position: {}.".format(position)
+            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen. Position: {}; Zufallsgegner-Equity {:.1f}% +/- {:.1f}%.".format(
+                position, equity * 100, error * 100
+            )
         else:
             pot_odds = call / (pot + call) if pot + call else 1.0
             margin = {"UTG": 0.04, "MP": 0.03, "CO": 0.02, "BTN": 0.0, "SB": 0.02, "BB": 0.01}.get(position, 0.02)
             action = "CALL (heuristisch)" if equity >= pot_odds + margin else "FOLD (heuristisch)"
-            reason = "Pot Odds {:.1f}%; {}-Equity {:.1f}% +/- {:.1f}%; Positionspuffer {:.1f}%. Rake nicht enthalten.".format(
-                pot_odds * 100, "Zufallsgegner", equity * 100, error * 100, margin * 100
+            reason = "Pot Odds {:.1f}%; {}-Equity {:.1f}% +/- {:.1f}%; Position {} (Puffer {:.1f}%). Rake nicht enthalten.".format(
+                pot_odds * 100, "Zufallsgegner", equity * 100, error * 100, position, margin * 100
             )
         return action, reason
