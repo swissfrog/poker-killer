@@ -301,6 +301,7 @@ class PokerVisionAssistant:
             
             # Empfehlung und Hand-History aktualisieren
             self._update_recommendation()
+            self.pot_size, self.current_bet = self.bet_sizing.values()
             self.history.observe(
                 self.player_cards,
                 self.community_cards,
@@ -326,6 +327,7 @@ class PokerVisionAssistant:
             elif key == ord('r'):
                 self.player_cards = []
                 self.community_cards = []
+                self.last_recommendation = ""
                 self.detection_paused_until = time.monotonic() + 1.5
             elif key == ord('h'):
                 self.history.print_recent()
