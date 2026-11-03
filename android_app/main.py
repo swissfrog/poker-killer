@@ -160,14 +160,24 @@ class PokerKillerAndroidApp(App):
         self.camera.play = True
         self.camera_status.text = "Lokale Vorschau; Kartenerkennung ist nicht aktiv."
 
+    def _proposed_bet(self):
+        try:
+            text = self.bet_label.text.split(":", 1)[1].strip()
+            return float(text) if text != "—" else 0.0
+        except (ValueError, IndexError):
+            return 0.0
+
     def analyze(self, *_args):
         try:
             hole, board = validate_deal(self.hole_input.text, self.board_input.text)
             pot = max(0.0, float(self.pot_input.text.replace(",", ".")))
             call = max(0.0, float(self.call_input.text.replace(",", ".")))
             category, _category_rank = self.logic.evaluate_hand(hole + board)
-            action, reason = self.logic.recommend(hole, board, pot, call, self.position.text)
             equity, error = self.logic.calculate_equity(hole, board)
+            action, reason = self.logic.recommend(
+                hole, board, pot, call, self.position.text,
+                proposed_bet=self._proposed_bet(), equity_result=(equity, error)
+            )
         except ValueError as exc:
             self.result.text = "Eingabe prüfen: {}".format(exc)
             return
