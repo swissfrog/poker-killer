@@ -40,6 +40,8 @@ class CardCorrectionUI:
         slots = self.player_slots if zone == "player" else self.board_slots if zone == "board" else None
         if slots is None or not 0 <= slot < len(slots):
             return False, "Ungueltiger Bereich oder Kartenplatz."
+        if rank not in self.card_class.RANKS or suit not in self.card_class.SUITS:
+            return False, "Ungueltiger Kartenwert."
         candidate = self.card_class(rank, suit)
         for other_zone in (self.player_slots, self.board_slots):
             for index, existing in enumerate(other_zone):
