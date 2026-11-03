@@ -28,6 +28,9 @@ from preflop_range_chart import PreflopRangeChart
 from push_fold_table import PushFoldTable
 from shake_reset import ShakeResetDetector
 import poker_vision_assistant
+from card_correction import CardCorrectionUI
+from poker_logic import PokerLogic
+from poker_vision_assistant import Card
 
 
 class FakeCard:
@@ -79,7 +82,8 @@ class FeatureTests(unittest.TestCase):
         controls.pot_size = 300
         for x, expected in [(30, 100), (150, 150), (260, 200), (380, 300)]:
             controls._on_mouse(cv2.EVENT_LBUTTONDOWN, x, 170, 0, None)
-            self.assertEqual(controls.current_bet, expected)
+            self.assertEqual(controls.proposed_bet, expected)
+            self.assertEqual(controls.call_amount, 0)
 
     def test_push_fold_table_loads_user_data_by_position_and_stack(self):
         with tempfile.TemporaryDirectory() as directory:
@@ -104,6 +108,51 @@ class FeatureTests(unittest.TestCase):
         frame = np.zeros((120, 160, 3), dtype=np.uint8)
         self.assertFalse(detector.update(frame))
         self.assertFalse(detector.update(frame))
+
+    def test_hand_evaluator_ranks_categories_and_best_five_cards(self):
+        royal = [
+            Card("A", "hearts"), Card("K", "hearts"), Card("Q", "hearts"),
+            Card("J", "hearts"), Card("10", "hearts"), Card("2", "clubs"),
+            Card("3", "diamonds"),
+        ]
+        self.assertEqual(PokerLogic.evaluate_hand(royal), ("Straight Flush", 8))
+        wheel = [Card("A", "clubs"), Card("2", "diamonds"), Card("3", "hearts"),
+                 Card("4", "spades"), Card("5", "clubs")]
+        self.assertEqual(PokerLogic.evaluate_hand(wheel), ("Straight", 4))
+        two_trips = [
+            Card("9", "hearts"), Card("9", "diamonds"), Card("9", "clubs"),
+            Card("8", "hearts"), Card("8", "diamonds"), Card("8", "clubs"),
+            Card("A", "spades"),
+        ]
+        self.assertEqual(PokerLogic.evaluate_hand(two_trips), ("Full House", 6))
+
+    def test_hand_evaluator_rejects_duplicate_cards(self):
+        cards = [Card("A", "spades"), Card("A", "spades")]
+        with self.assertRaises(ValueError):
+            PokerLogic.rank_hand(cards)
+
+    def test_manual_card_correction_blocks_duplicates_and_requires_valid_board(self):
+        editor = CardCorrectionUI(Card)
+        self.assertTrue(editor.apply_card("player", 0, "A", "spades")[0])
+        self.assertTrue(editor.apply_card("player", 1, "K", "hearts")[0])
+        self.assertFalse(editor.apply_card("board", 0, "A", "spades")[0])
+        self.assertTrue(editor.confirm())
+        self.assertTrue(editor.apply_card("board", 0, "2", "clubs")[0])
+        self.assertFalse(editor.confirm())
+
+    def test_equity_is_reproducible_and_position_changes_call_margin(self):
+        aces = [Card("A", "spades"), Card("A", "hearts")]
+        equity_a = PokerLogic.calculate_equity(aces, [], samples=120)
+        equity_b = PokerLogic.calculate_equity(aces, [], samples=120)
+        self.assertEqual(equity_a, equity_b)
+        self.assertGreater(equity_a[0], 0.70)
+        with patch.object(PokerLogic, "calculate_equity", return_value=(0.22, 0.01)):
+            early = PokerLogic.recommend(aces, [], 100, 25, "UTG")
+            button = PokerLogic.recommend(aces, [], 100, 25, "BTN")
+        self.assertIn("FOLD", early[0])
+        self.assertIn("CALL", button[0])
+        self.assertIn("Pot Odds", button[1])
+        self.assertIn("BTN", button[1])
 
 
 if __name__ == "__main__":
