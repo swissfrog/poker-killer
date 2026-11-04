@@ -13,7 +13,7 @@ orientation = portrait
 fullscreen = 0
 
 android.permissions = CAMERA
-android.minapi = 24
+android.minapi = 26
 android.api = 35
 android.archs = arm64-v8a
 p4a.bootstrap = sdl2
