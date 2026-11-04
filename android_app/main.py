@@ -47,7 +47,9 @@ class PokerKillerAndroidApp(App):
         self.result.bind(size=lambda widget, size: setattr(widget, "text_size", (size[0], None)))
         self.camera_status = Label(text="Kamera ist aus. Vorschau wird nur lokal angezeigt.",
                                    size_hint_y=None, height=dp(32))
-        self.camera = Camera(play=False, resolution=(640, 480), size_hint_y=None, height=dp(190))
+        self.camera = None
+        self.camera_container = BoxLayout(size_hint_y=None, height=dp(190))
+        self.camera_container.add_widget(Label(text="Kamera-Vorschau ist aus."))
         self.history_label = Label(text="", size_hint_y=None, height=dp(100), halign="left", valign="top")
         self.history_label.bind(size=lambda widget, size: setattr(widget, "text_size", (size[0], None)))
 
@@ -58,7 +60,7 @@ class PokerKillerAndroidApp(App):
 
         content.add_widget(Label(text="[b]Poker Helper[/b]  ·  private Android-Version",
                                  markup=True, size_hint_y=None, height=dp(42)))
-        content.add_widget(self.camera)
+        content.add_widget(self.camera_container)
         camera_button = Button(text="Kamera-Vorschau ein/aus", size_hint_y=None, height=dp(44))
         camera_button.bind(on_release=self.toggle_camera)
         content.add_widget(camera_button)
@@ -143,7 +145,7 @@ class PokerKillerAndroidApp(App):
         self.bet_label.text = "Bet-Preset: {:.2f}".format(pot * fraction)
 
     def toggle_camera(self, *_args):
-        if self.camera.play:
+        if self.camera is not None and self.camera.play:
             self.camera.play = False
             self.camera_status.text = "Kamera ist aus."
             return
@@ -169,8 +171,19 @@ class PokerKillerAndroidApp(App):
             self.camera_status.text = "Kamerazugriff verweigert. Karten bitte manuell eintragen."
 
     def _start_camera(self):
-        self.camera.play = True
-        self.camera_status.text = "Lokale Vorschau; Kartenerkennung ist nicht aktiv."
+        try:
+            if self.camera is None:
+                self.camera = Camera(play=False, resolution=(640, 480),
+                                     size_hint_y=None, height=dp(190))
+                self.camera_container.clear_widgets()
+                self.camera_container.add_widget(self.camera)
+            self.camera.play = True
+            self.camera_status.text = "Lokale Vorschau; Kartenerkennung ist nicht aktiv."
+        except Exception as exc:
+            self.camera = None
+            self.camera_container.clear_widgets()
+            self.camera_container.add_widget(Label(text="Kamera nicht verfügbar. Karten bitte manuell eintragen."))
+            self.camera_status.text = "Kamera konnte nicht gestartet werden: {}".format(exc)
 
     def _proposed_bet(self):
         try:
