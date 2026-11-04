@@ -38,7 +38,7 @@ class PokerKillerAndroidApp(App):
                                      multiline=False, size_hint_y=None, height=dp(48))
         self.position = Spinner(text="BTN", values=("UTG", "MP", "CO", "BTN", "SB", "BB"),
                                  size_hint_y=None, height=dp(48))
-        self.villain_position = Spinner(text="CO", values=("LJ", "HJ", "CO", "BTN", "SB", "BB"),
+        self.villain_position = Spinner(text="CO", values=("LJ", "HJ", "CO", "BTN", "SB"),
                                         size_hint_y=None, height=dp(48))
         self.range_mode = Spinner(text="GTO-Openrange 100 BB", values=("GTO-Openrange 100 BB", "Zufallsgegner"),
                                   size_hint_y=None, height=dp(48))

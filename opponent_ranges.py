@@ -4,7 +4,7 @@ import json
 from functools import lru_cache
 from pathlib import Path
 
-POSITIONS = ("LJ", "HJ", "CO", "BTN", "SB", "BB")
+POSITIONS = ("LJ", "HJ", "CO", "BTN", "SB")
 DATA_FILE = Path(__file__).resolve().parent / "data" / "ranges" / "Cash_100_GTO.json"
 
 

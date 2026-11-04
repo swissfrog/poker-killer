@@ -32,6 +32,7 @@ from card_correction import CardCorrectionUI
 from poker_logic import PokerLogic
 from poker_vision_assistant import Card
 from android_app.card_input import parse_cards, validate_deal
+from opponent_ranges import opening_range
 
 
 class FakeCard:
@@ -169,6 +170,24 @@ class FeatureTests(unittest.TestCase):
         hole, board = validate_deal("As Kh", "2c 3d 4h")
         self.assertEqual(len(hole), 2)
         self.assertEqual(len(board), 3)
+
+    def test_bundled_opening_ranges_cover_six_max_positions(self):
+        for position in ("LJ", "HJ", "CO", "BTN", "SB"):
+            hand_range = opening_range(position)
+            self.assertTrue(hand_range)
+            self.assertIn("AA", hand_range)
+            self.assertTrue(all(0.0 < frequency <= 1.0 for frequency in hand_range.values()))
+        with self.assertRaises(ValueError):
+            opening_range("UTG")
+
+    def test_equity_accepts_a_weighted_opponent_range(self):
+        hero = [("K", "spades"), ("K", "hearts")]
+        weighted_range = {"AA": 1.0}
+        result_a = PokerLogic.calculate_equity(hero, [], samples=80, opponent_range=weighted_range)
+        result_b = PokerLogic.calculate_equity(hero, [], samples=80, opponent_range=weighted_range)
+        self.assertEqual(result_a, result_b)
+        self.assertGreaterEqual(result_a[0], 0.0)
+        self.assertLessEqual(result_a[0], 1.0)
 
     def test_recommendation_reuses_supplied_equity(self):
         cards = [Card("A", "spades"), Card("A", "hearts")]

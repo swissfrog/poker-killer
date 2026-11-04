@@ -171,7 +171,7 @@ class PokerLogic:
                 opponent = draw[:2]
                 final_board = list(community_cards) + draw[2:]
             else:
-                opponent = rng.choices(weighted_opponents, weights=opponent_weights, k=1)[0]
+                opponent = list(rng.choices(weighted_opponents, weights=opponent_weights, k=1)[0])
                 remaining_deck = [card for card in deck if card not in opponent]
                 final_board = list(community_cards) + rng.sample(remaining_deck, runout_count)
             hero_rank = cls.rank_hand(list(hole_cards) + final_board)
