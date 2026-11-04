@@ -13,10 +13,11 @@ orientation = portrait
 fullscreen = 0
 
 android.permissions = CAMERA
-android.minapi = 23
+android.minapi = 24
 android.api = 35
 android.archs = arm64-v8a
 p4a.bootstrap = sdl2
+p4a.branch = v2024.01.21
 
 [buildozer]
 
