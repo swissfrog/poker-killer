@@ -12,8 +12,18 @@ import numpy as np
 import threading
 import time
 import json
+import math
 from collections import namedtuple
 from typing import List, Tuple, Optional
+from hand_history import HandHistory
+from opponent_model import OpponentModel
+from preflop_range_chart import PreflopRangeChart
+from push_fold_table import PushFoldTable
+from bet_sizing import BetSizingControls
+from card_flip_animation import CardFlipAnimation
+from shake_reset import ShakeResetDetector
+from card_correction import CardCorrectionUI
+from poker_logic import PokerLogic
 
 # Farben für die Kartenerkennung (in HSV)
 CARD_COLORS = {
@@ -48,126 +58,6 @@ class Card:
     def value(self) -> int:
         """Kartenwert für Vergleiche"""
         return self.RANKS.index(self.rank) + 2
-
-
-class PokerLogic:
-    """Poker-Logik und Odds-Berechnung"""
-    
-    @staticmethod
-    def evaluate_hand(cards: List[Card]) -> Tuple[str, int]:
-        """Bewertet eine Poker-Hand"""
-        if len(cards) < 2:
-            return ("Start hand", 0)
-        
-        ranks = [c.rank for c in cards]
-        suits = [c.suit for c in cards]
-        
-        # Prüfe auf Paar, Two Pair, Drilling, etc.
-        rank_counts = {}
-        for r in ranks:
-            rank_counts[r] = rank_counts.get(r, 0) + 1
-        
-        values = sorted([c.value() for c in cards], reverse=True)
-        
-        # Royal Flush, Straight Flush, etc. (vereinfacht)
-        if len(cards) >= 5:
-            if PokerLogic._is_flush(suits) and PokerLogic._is_straight(values):
-                if values[-1] == 10:
-                    return ("Royal Flush", 100)
-                return ("Straight Flush", 90)
-            
-            if 4 in rank_counts.values():
-                return ("Four of a Kind", 80)
-            
-            if 3 in rank_counts.values() and 2 in rank_counts.values():
-                return ("Full House", 70)
-            
-            if PokerLogic._is_flush(suits):
-                return ("Flush", 60)
-            
-            if PokerLogic._is_straight(values):
-                return ("Straight", 50)
-            
-            if 3 in rank_counts.values():
-                return ("Three of a Kind", 40)
-            
-            if list(rank_counts.values()).count(2) == 2:
-                return ("Two Pair", 30)
-            
-            if 2 in rank_counts.values():
-                return ("Pair", 20)
-        
-        # Beste High Card
-        return ("High Card", max(values))
-    
-    @staticmethod
-    def _is_flush(suits: List[str]) -> bool:
-        return len(set(suits)) == 1
-    
-    @staticmethod
-    def _is_straight(values: List[int]) -> bool:
-        if len(values) < 5:
-            return False
-        unique = sorted(set(values))
-        if len(unique) < 5:
-            return False
-        # Prüfe auf Straße
-        for i in range(len(unique) - 4):
-            if unique[i+4] - unique[i] == 4:
-                return True
-        # Wheel (A-2-3-4-5)
-        if set([14, 2, 3, 4, 5]).issubset(set(values)):
-            return True
-        return False
-    
-    @staticmethod
-    def get_hand_strength(cards: List[Card], community: List[Card]) -> float:
-        """Berechnet die Stärke der Hand (0-1)"""
-        all_cards = cards + community
-        
-        if len(all_cards) < 2:
-            return 0.1
-        
-        hand_type, score = PokerLogic.evaluate_hand(all_cards)
-        
-        # Basis-Score umrechnen
-        strength = score / 100.0
-        
-        # Boni für Starthand
-        if len(cards) == 2:
-            # Premium-Hände
-            premium_ranks = ['A', 'K', 'Q', 'J', '10']
-            if all(c.rank in premium_ranks for c in cards):
-                strength += 0.2
-            # Pocket Pairs
-            if cards[0].rank == cards[1].rank:
-                strength += 0.15
-            # Suited connectors
-            if cards[0].suit == cards[1].suit and abs(cards[0].value() - cards[1].value()) <= 2:
-                strength += 0.1
-        
-        return min(strength, 1.0)
-    
-    @staticmethod
-    def get_recommendation(hand_strength: float, pot_odds: float, position: str = "middle") -> str:
-        """Gibt eine Empfehlung basierend auf Handstärke und Pot-Odds"""
-        
-        # Anpassung nach Position
-        position_bonus = {"early": -0.1, "middle": 0, "late": 0.1}
-        adjusted_strength = hand_strength + position_bonus.get(position, 0)
-        
-        if adjusted_strength > 0.8:
-            return "RAISE - Starke Hand, erhöhen!"
-        elif adjusted_strength > 0.6:
-            if pot_odds > 0.2:
-                return "CALL - Gute Odds zum callen"
-            return "CHECK - Hand ist gut"
-        elif adjusted_strength > 0.4:
-            if pot_odds > 0.15:
-                return "FOLD - Zu schwach"
-            return "CHECK - Weiter"
-        else:
-            return "FOLD - Hand zu schwach"
 
 
 class CardDetector:
@@ -222,7 +112,7 @@ class CardDetector:
                     rank_idx = min(int(brightness / 20), 12)
                     rank = Card.RANKS[rank_idx]
                     
-                    cards.append(Card(rank, suit)
+                    cards.append(Card(rank, suit))
                     
                     # Zeichne Rahmen
                     cv2.rectangle(frame, (x, y), (x+w, y+h), (0, 255, 0), 2)
@@ -242,6 +132,20 @@ class PokerVisionAssistant:
         self.cap = cv2.VideoCapture(camera_index)
         self.card_detector = CardDetector()
         self.poker_logic = PokerLogic()
+        self.card_editor = CardCorrectionUI(Card)
+        self.manual_card_mode = False
+        self.last_recommendation_reason = ""
+        self._recommendation_key = None
+        self.history = HandHistory()
+        self.opponent_model = OpponentModel()
+        self.range_chart = PreflopRangeChart()
+        self.push_fold_table = PushFoldTable()
+        self.bet_sizing = BetSizingControls()
+        self.card_animation = CardFlipAnimation()
+        self.shake_detector = ShakeResetDetector()
+        self.shake_reset_enabled = True
+        self.detection_paused_until = 0.0
+        self.light_mode = False
         
         self.player_cards: List[Card] = []
         self.community_cards: List[Card] = []
@@ -258,6 +162,9 @@ class PokerVisionAssistant:
         print("🎲 Poker Vision Assistant gestartet!")
         print("Drücke 'q' zum Beenden")
         print("Drücke 'r' um Karten zu resetten")
+        print("Drücke 'h' für History, 'p' für Ranges, 'n' für Push/Fold, 'b' für Bet-Sizing")
+        print("Drücke 't' für Theme, 'm' schaltet Shake-Reset um; Position im Chart: 1-6")
+        print("Drücke 'c' für Kartenkorrektur, 'v' für automatische Kameraerkennung")
         
         while self.running:
             ret, frame = self.cap.read()
@@ -265,16 +172,48 @@ class PokerVisionAssistant:
                 print("❌ Kein Kamerabild")
                 break
             
-            # Karten erkennen
-            self.player_cards = self.card_detector.detect_cards(frame)
+            # Kamera-Schütteln als Reset-Geste; die Historie bleibt erhalten.
+            if self.shake_reset_enabled and self.shake_detector.update(frame):
+                self.player_cards = []
+                self.community_cards = []
+                self.last_recommendation = ""
+                self.last_recommendation_reason = ""
+                self.detection_paused_until = time.monotonic() + 1.5
+                if self.manual_card_mode:
+                    self.card_editor.load_cards([], [])
+                print("Shake-Reset erkannt; Kartenansicht zurückgesetzt")
+
+            # Karten erkennen oder bestaetigte manuelle Eingaben verwenden
+            if self.manual_card_mode:
+                self.player_cards, self.community_cards = self.card_editor.cards()
+            elif time.monotonic() >= self.detection_paused_until:
+                self.player_cards = self._unique_cards(self.card_detector.detect_cards(frame))
+            else:
+                self.player_cards = []
             
+            # Einsatzwerte zuerst lesen, damit Empfehlung und Verlauf denselben Zustand nutzen.
+            self.pot_size, self.current_bet = self.bet_sizing.values()
+            self._update_recommendation()
+            self.history.observe(
+                self.player_cards,
+                self.community_cards,
+                self.pot_size,
+                self.current_bet,
+                self.last_recommendation,
+            )
+
             # UI zeichnen
             self._draw_ui(frame)
             
-            # Empfehlung aktualisieren
-            self._update_recommendation()
-            
             cv2.imshow('Poker Vision Assistant', frame)
+            if self.range_chart.is_open:
+                cv2.imshow(self.range_chart.WINDOW_NAME, self.range_chart.render(self.player_cards))
+            if self.push_fold_table.is_open:
+                cv2.imshow(self.push_fold_table.WINDOW_NAME, self.push_fold_table.render(self.player_cards))
+            if self.bet_sizing.is_open:
+                self.bet_sizing.render()
+            if self.card_editor.is_open:
+                self.card_editor.show()
             
             key = cv2.waitKey(1) & 0xFF
             if key == ord('q'):
@@ -282,6 +221,47 @@ class PokerVisionAssistant:
             elif key == ord('r'):
                 self.player_cards = []
                 self.community_cards = []
+                self.last_recommendation = ""
+                self.last_recommendation_reason = ""
+                if self.manual_card_mode:
+                    self.card_editor.load_cards([], [])
+                self.detection_paused_until = time.monotonic() + 1.5
+            elif key == ord('h'):
+                self.history.print_recent()
+            elif key == ord('c'):
+                if not self.card_editor.is_open:
+                    if not self.manual_card_mode:
+                        self.card_editor.open(self.player_cards, self.community_cards)
+                        self.manual_card_mode = True
+                    else:
+                        self.card_editor.open()
+                else:
+                    self.card_editor.close()
+            elif key == ord('v'):
+                self.manual_card_mode = False
+                self.card_editor.close()
+                self.community_cards = []
+                self.last_recommendation = ""
+                self.last_recommendation_reason = ""
+            elif key == ord('p'):
+                self.range_chart.toggle_window()
+            elif key == ord('n'):
+                self.push_fold_table.toggle_window()
+            elif key == ord('b'):
+                self.bet_sizing.toggle_window()
+            elif key == ord('t'):
+                self.light_mode = not self.light_mode
+            elif key == ord('m'):
+                self.shake_reset_enabled = not self.shake_reset_enabled
+                print("Shake-Reset {}".format("aktiv" if self.shake_reset_enabled else "aus"))
+            elif key in [ord(str(i)) for i in range(1, 7)]:
+                position_index = key - ord('1')
+                self.range_chart.set_position_index(position_index)
+                self.push_fold_table.set_position_index(position_index)
+            elif key == ord('['):
+                self.push_fold_table.cycle_stack(-1)
+            elif key == ord(']'):
+                self.push_fold_table.cycle_stack(1)
         
         self.stop()
     
@@ -289,17 +269,40 @@ class PokerVisionAssistant:
         """Zeichnet die UI auf das Bild"""
         height, width = frame.shape[:2]
         
-        # Header
-        cv2.rectangle(frame, (0, 0), (width, 60), (20, 20, 30), -1)
-        cv2.putText(frame, "🎲 Poker Vision Assistant", (20, 40), 
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, (255, 255, 255), 2)
+        # Theme und Kopfbereich
+        header_color = (225, 225, 225) if self.light_mode else (20, 20, 30)
+        foreground = (30, 30, 30) if self.light_mode else (245, 245, 245)
+        cv2.rectangle(frame, (0, 0), (width, 60), header_color, -1)
+        cv2.putText(frame, "Poker Vision Assistant | {} mode".format("Light" if self.light_mode else "Dark"), (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, foreground, 2)
         
+        cv2.putText(frame, "History: {} | h: Verlauf | p: Range | n: Push/Fold | b: Bet".format(len(self.history.entries)),
+                    (20, 85), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+        cv2.putText(frame, self.opponent_model.summary(), (20, 108),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.48, foreground, 1)
+        pot_size, current_bet = self.bet_sizing.values()
+        self.pot_size, self.current_bet = pot_size, current_bet
+        cv2.putText(frame, "Kartenmodus: {} | c: Korrektur | v: Kamera".format(
+            "manuell" if self.manual_card_mode else "Kamera (unbestaetigt)"),
+            (20, 150), cv2.FONT_HERSHEY_SIMPLEX, 0.43, foreground, 1)
+        cv2.putText(frame, "Pot {:.0f} | Call {:.0f} | Bet-Preset {:.0f} | Shake-Reset {}".format(
+            pot_size, current_bet, self.bet_sizing.proposed_bet, "AN" if self.shake_reset_enabled else "AUS"),
+            (20, 130), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+        self._draw_bluff_meter(frame, foreground)
+        self.card_animation.draw(frame, self.player_cards, 20, 175)
+        vpip, pfr = self.opponent_model.values()
+        if vpip >= 35 and vpip > 0 and pfr / float(vpip) <= 0.35:
+            pulse = 110 + int(100 * (0.5 + 0.5 * math.sin(time.monotonic() * 6)))
+            cv2.rectangle(frame, (width - 205, 12), (width - 18, 48), (20, pulse, 30), -1)
+            cv2.putText(frame, "Fish profile? (manuell)", (width - 198, 36),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1)
+
         # Spieler-Karten anzeigen
         y_card = height - 150
         if self.player_cards:
             card_text = " ".join(str(c) for c in self.player_cards)
-            cv2.putText(frame, f"Deine Karten: {card_text}", (20, y_card), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 0), 2)
+            cv2.putText(frame, f"Hole Cards: {card_text}", (20, y_card),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 130, 30), 2)
         
         # Gemeinschaftskarten
         if self.community_cards:
@@ -319,31 +322,87 @@ class PokerVisionAssistant:
             text_size = cv2.getTextSize(self.last_recommendation, 
                                         cv2.FONT_HERSHEY_SIMPLEX, 1, 2)[0]
             text_x = (width - text_size[0]) // 2
-            cv2.putText(frame, self.last_recommendation, (text_x, height//2 + 10), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 1, (0, 255, 0), 2)
+            cv2.putText(frame, self.last_recommendation, (text_x, height//2 + 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 255, 0), 2)
+            if self.last_recommendation_reason:
+                cv2.putText(frame, self.last_recommendation_reason[:100], (max(10, width//8), height//2 + 42),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.42, foreground, 1)
         
-        # Hand-Stärke
-        if self.player_cards:
-            strength = self.poker_logic.get_hand_strength(
-                self.player_cards, self.community_cards
-            )
-            strength_text = f"Hand-Stärke: {strength*100:.0f}%"
-            cv2.putText(frame, strength_text, (width - 250, height - 20), 
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
+        # Einen Hand-Rang nur fuer bestaetigte, vollstaendige manuelle Karten anzeigen.
+        if self.manual_card_mode and self.card_editor.confirmed:
+            known_cards = self.player_cards + self.community_cards
+            if 2 <= len(known_cards) <= 7:
+                try:
+                    hand_name, _category = self.poker_logic.evaluate_hand(known_cards)
+                except ValueError:
+                    hand_name = "ungueltige Karten"
+                strength_text = "Hand-Rang: {}".format(hand_name)
+                cv2.putText(frame, strength_text, (width - 250, height - 20),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 1)
     
+    def _draw_bluff_meter(self, frame, foreground):
+        """Zeigt eine manuelle Schätzung, keine berechnete Bluff-Wahrscheinlichkeit."""
+        height, width = frame.shape[:2]
+        value = self.opponent_model.bluff_estimate()
+        center = (width - 100, height - 80)
+        cv2.ellipse(frame, center, (70, 42), 0, 180, 360, (130, 130, 130), 5)
+        angle = math.pi - (value / 100.0) * math.pi
+        endpoint = (int(center[0] + 62 * math.cos(angle)), int(center[1] - 36 * math.sin(angle)))
+        cv2.line(frame, center, endpoint, (0, 160, 255), 3)
+        cv2.putText(frame, "Bluff (manuell) {}%".format(value),
+                    (width - 210, height - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.45, foreground, 1)
+
+    @staticmethod
+    def _unique_cards(cards):
+        unique = []
+        seen = set()
+        for card in cards:
+            key = (card.rank, card.suit)
+            if key not in seen:
+                seen.add(key)
+                unique.append(card)
+        return unique
+
     def _update_recommendation(self):
-        """Aktualisiert die Empfehlung"""
-        if len(self.player_cards) >= 2:
-            strength = self.poker_logic.get_hand_strength(
-                self.player_cards, self.community_cards
+        """Gibt nur fuer bestaetigte manuelle Karten eine begruendete Entscheidung aus."""
+        if not self.manual_card_mode or not self.card_editor.confirmed:
+            self._recommendation_key = None
+            self.last_recommendation = "Karten pruefen und in der Korrektur bestaetigen"
+            self.last_recommendation_reason = ""
+            return
+        if len(self.player_cards) != 2:
+            self._recommendation_key = None
+            self.last_recommendation = "Keine Empfehlung: genau zwei Hole Cards benoetigt"
+            self.last_recommendation_reason = ""
+            return
+        cache_key = (
+            tuple((card.rank, card.suit) for card in self.player_cards),
+            tuple((card.rank, card.suit) for card in self.community_cards),
+            self.pot_size,
+            self.current_bet,
+            self.bet_sizing.proposed_bet,
+            self.range_chart.position,
+        )
+        if cache_key == self._recommendation_key:
+            return
+        self._recommendation_key = cache_key
+        self.last_recommendation = ""
+        self.last_recommendation_reason = ""
+        try:
+            action, reason = self.poker_logic.recommend(
+                self.player_cards,
+                self.community_cards,
+                self.pot_size,
+                self.current_bet,
+                self.range_chart.position,
+                self.bet_sizing.proposed_bet,
             )
-            
-            # Pot-Odds berechnen (vereinfacht)
-            pot_odds = 0.1  # Default
-            
-            self.last_recommendation = self.poker_logic.get_recommendation(
-                strength, pot_odds
-            )
+        except ValueError as exc:
+            self.last_recommendation = "Keine Empfehlung: ungueltige Karten"
+            self.last_recommendation_reason = str(exc)
+            return
+        self.last_recommendation = action
+        self.last_recommendation_reason = reason
     
     def add_community_card(self, card: Card):
         """Fügt eine Gemeinschaftskarte hinzu"""
