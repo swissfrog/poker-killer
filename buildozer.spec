@@ -4,7 +4,7 @@ title = Poker Helper
 package.name = pokerhelper
 package.domain = de.swissfrog
 source.dir = .
-source.include_exts = py,kv,json
+source.include_exts = py,kv,json,md
 source.exclude_dirs = .git,tests,trainer,test_checkout
 version = 0.1.0
 

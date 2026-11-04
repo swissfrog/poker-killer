@@ -126,8 +126,21 @@ class PokerLogic:
         return list(max(combinations(cards, 5), key=cls._rank_five))
 
     @classmethod
-    def calculate_equity(cls, hole_cards, community_cards, samples=600):
-        """Monte Carlo equity versus a uniformly random opponent hand."""
+    def _starting_hand_notation(cls, first, second):
+        first_rank, first_suit = cls.card_key(first)
+        second_rank, second_suit = cls.card_key(second)
+        first_value = cls.RANK_VALUES[first_rank]
+        second_value = cls.RANK_VALUES[second_rank]
+        high, low = (first, second) if first_value >= second_value else (second, first)
+        high_rank, high_suit = cls.card_key(high)
+        low_rank, low_suit = cls.card_key(low)
+        if high_rank == low_rank:
+            return high_rank + low_rank
+        return high_rank + low_rank + ("s" if high_suit == low_suit else "o")
+
+    @classmethod
+    def calculate_equity(cls, hole_cards, community_cards, samples=600, opponent_range=None):
+        """Estimate equity against random cards or weighted 169-hand frequencies."""
         if len(hole_cards) != 2:
             raise ValueError("Exactly two hole cards are required")
         if len(community_cards) not in (0, 3, 4, 5):
@@ -141,10 +154,26 @@ class PokerLogic:
         rng = random.Random(seed)
         wins = ties = 0
         runout_count = 5 - len(community_cards)
+        weighted_opponents = None
+        if opponent_range is not None:
+            weighted_opponents = []
+            opponent_weights = []
+            for first, second in combinations(deck, 2):
+                frequency = float(opponent_range.get(cls._starting_hand_notation(first, second), 0.0))
+                if frequency > 0:
+                    weighted_opponents.append((first, second))
+                    opponent_weights.append(frequency)
+            if not weighted_opponents:
+                raise ValueError("Keine Karten aus dieser Gegner-Range sind nach den bekannten Karten noch möglich.")
         for _ in range(max(1, samples)):
-            draw = rng.sample(deck, 2 + runout_count)
-            opponent = draw[:2]
-            final_board = list(community_cards) + draw[2:]
+            if weighted_opponents is None:
+                draw = rng.sample(deck, 2 + runout_count)
+                opponent = draw[:2]
+                final_board = list(community_cards) + draw[2:]
+            else:
+                opponent = rng.choices(weighted_opponents, weights=opponent_weights, k=1)[0]
+                remaining_deck = [card for card in deck if card not in opponent]
+                final_board = list(community_cards) + rng.sample(remaining_deck, runout_count)
             hero_rank = cls.rank_hand(list(hole_cards) + final_board)
             opponent_rank = cls.rank_hand(opponent + final_board)
             if hero_rank > opponent_rank:
@@ -156,21 +185,21 @@ class PokerLogic:
         return equity, error
 
     @classmethod
-    def recommend(cls, hole_cards, community_cards, pot_size, call_amount, position, proposed_bet=0, equity_result=None):
-        """Explain a pot-odds decision under a random-opponent assumption."""
+    def recommend(cls, hole_cards, community_cards, pot_size, call_amount, position, proposed_bet=0, equity_result=None, opponent_label="Zufallsgegner"):
+        """Explain a pot-odds decision using the selected opponent model."""
         equity, error = equity_result or cls.calculate_equity(hole_cards, community_cards)
         pot = max(0.0, float(pot_size))
         call = max(0.0, float(call_amount))
         if call == 0:
             action = "CHECK AVAILABLE"
-            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen. Position: {}; Zufallsgegner-Equity {:.1f}% +/- {:.1f}%; Bet-Preset {:.0f}.".format(
-                position, equity * 100, error * 100, proposed_bet
+            reason = "Kein Call-Einsatz; kein Raise wird ohne weitere Tischdaten empfohlen. Position: {}; Equity gegen {} {:.1f}% +/- {:.1f}%; Bet-Preset {:.0f}.".format(
+                position, opponent_label, equity * 100, error * 100, proposed_bet
             )
         else:
             pot_odds = call / (pot + call) if pot + call else 1.0
             margin = {"UTG": 0.04, "MP": 0.03, "CO": 0.02, "BTN": 0.0, "SB": 0.02, "BB": 0.01}.get(position, 0.02)
             action = "CALL (heuristisch)" if equity >= pot_odds + margin else "FOLD (heuristisch)"
-            reason = "Pot Odds {:.1f}%; {}-Equity {:.1f}% +/- {:.1f}%; Position {} (Puffer {:.1f}%). Rake nicht enthalten.".format(
-                pot_odds * 100, "Zufallsgegner", equity * 100, error * 100, position, margin * 100
+            reason = "Pot Odds {:.1f}%; Equity gegen {} {:.1f}% +/- {:.1f}%; Position {} (Puffer {:.1f}%). Rake nicht enthalten.".format(
+                pot_odds * 100, opponent_label, equity * 100, error * 100, position, margin * 100
             )
         return action, reason

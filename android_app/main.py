@@ -20,6 +20,7 @@ from kivy.uix.textinput import TextInput
 
 from poker_logic import PokerLogic
 from android_app.card_input import validate_deal
+from opponent_ranges import opening_range
 
 
 class PokerKillerAndroidApp(App):
@@ -37,6 +38,10 @@ class PokerKillerAndroidApp(App):
                                      multiline=False, size_hint_y=None, height=dp(48))
         self.position = Spinner(text="BTN", values=("UTG", "MP", "CO", "BTN", "SB", "BB"),
                                  size_hint_y=None, height=dp(48))
+        self.villain_position = Spinner(text="CO", values=("LJ", "HJ", "CO", "BTN", "SB", "BB"),
+                                        size_hint_y=None, height=dp(48))
+        self.range_mode = Spinner(text="GTO-Openrange 100 BB", values=("GTO-Openrange 100 BB", "Zufallsgegner"),
+                                  size_hint_y=None, height=dp(48))
         self.result = Label(text="Trage deine Karten ein und tippe auf „Auswerten“.",
                             size_hint_y=None, height=dp(120), halign="left", valign="middle")
         self.result.bind(size=lambda widget, size: setattr(widget, "text_size", (size[0], None)))
@@ -66,6 +71,13 @@ class PokerKillerAndroidApp(App):
         money_row.add_widget(self.call_input)
         content.add_widget(money_row)
         content.add_widget(self.position)
+        content.add_widget(Label(text="Gegnerposition (6-max)", size_hint_y=None, height=dp(28)))
+        content.add_widget(self.villain_position)
+        content.add_widget(self.range_mode)
+        content.add_widget(Label(
+            text="Openrange vor dem Flop; Postflop-Aktionen des Gegners sind noch nicht eingerechnet.",
+            size_hint_y=None, height=dp(42)
+        ))
 
         content.add_widget(Label(text="Vorgeschlagene Bet-Größe (Pot-Anteil)",
                                  size_hint_y=None, height=dp(30)))
@@ -173,10 +185,19 @@ class PokerKillerAndroidApp(App):
             pot = max(0.0, float(self.pot_input.text.replace(",", ".")))
             call = max(0.0, float(self.call_input.text.replace(",", ".")))
             category, _category_rank = self.logic.evaluate_hand(hole + board)
-            equity, error = self.logic.calculate_equity(hole, board)
+            if self.range_mode.text == "Zufallsgegner":
+                opponent_range = None
+                opponent_label = "Zufallsgegner"
+            else:
+                opponent_range = opening_range(self.villain_position.text)
+                opponent_label = "GTO-Openrange {} (100 BB)".format(self.villain_position.text)
+            equity, error = self.logic.calculate_equity(
+                hole, board, opponent_range=opponent_range
+            )
             action, reason = self.logic.recommend(
                 hole, board, pot, call, self.position.text,
-                proposed_bet=self._proposed_bet(), equity_result=(equity, error)
+                proposed_bet=self._proposed_bet(), equity_result=(equity, error),
+                opponent_label=opponent_label
             )
         except ValueError as exc:
             self.result.text = "Eingabe prüfen: {}".format(exc)
@@ -184,8 +205,8 @@ class PokerKillerAndroidApp(App):
 
         self.result.text = (
             "[b]Hand: {}[/b]\nEntscheidungshinweis: {}\n{}\n"
-            "Equity gegen Zufallshand: {:.1f}% +/- {:.1f}%"
-        ).format(category, action, reason, equity * 100, error * 100)
+            "Equity gegen {}: {:.1f}% +/- {:.1f}%"
+        ).format(category, action, reason, opponent_label, equity * 100, error * 100)
         self.save_history(hole, board, category, action, reason, pot, call)
         self.refresh_history()
 
